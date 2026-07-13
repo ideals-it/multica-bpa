@@ -27,6 +27,22 @@ for the BPA workflow.
 
 ## Product model
 
+### Reference workflow
+
+The fork adapts the public [Routa](https://github.com/phodal/routa) pattern,
+not its runtime or board implementation. Routa's `ROUTA Coordinator`,
+`CRAFTER`, and `GATE` map to BPA's Team Lead, specialist roles, and Quality.
+Its durable-evidence rule maps to one named result and one concise handoff per
+child issue. Multica's native child stages replace Routa's separate lane engine.
+
+The fork deliberately omits Routa's Backlog and Todo lane specialists for the
+first pilot: they would make an ordinary ticket harder to start. The retained
+path is `Lead → specialists → Lead → Quality → Lead`; a production task adds
+one human approval gate before the explicitly marked action. The gate follows
+the public GitHub Agentic Workflows `Safe Outputs` pattern: default deny,
+approval bound to an exact plan fingerprint, and a server-side re-check before
+dispatch.
+
 ### Workflow templates
 
 The fork exposes three small templates:

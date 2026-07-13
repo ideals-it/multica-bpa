@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/bpa"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -57,6 +58,26 @@ type TaskService struct {
 	analyticsContextMu    sync.Mutex
 	analyticsContextCache map[string]analytics.TaskContext
 	analyticsContextOrder []string
+}
+
+// CanEnqueueIssue is the one policy check shared by direct assignment and
+// mention dispatch. It fails closed for malformed BPA metadata so a damaged
+// production gate cannot accidentally become an allow decision.
+func (s *TaskService) CanEnqueueIssue(issue db.Issue) error {
+	metadata := map[string]any{}
+	if len(issue.Metadata) > 0 {
+		if err := json.Unmarshal(issue.Metadata, &metadata); err != nil {
+			return fmt.Errorf("%w: invalid BPA metadata", bpa.ErrHumanApprovalRequired)
+		}
+	}
+	state, err := bpa.ParseState(metadata)
+	if err != nil {
+		return fmt.Errorf("%w: %v", bpa.ErrHumanApprovalRequired, err)
+	}
+	if decision := bpa.CanDispatch(state); !decision.Allowed {
+		return decision.Err
+	}
+	return nil
 }
 
 // ComposioOverlayBuilder is the seam TaskService uses to build the per-task
@@ -714,6 +735,9 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 }
 
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string) (db.AgentTaskQueue, error) {
+	if err := s.CanEnqueueIssue(issue); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
@@ -814,6 +838,9 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 }
 
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string) (db.AgentTaskQueue, error) {
+	if err := s.CanEnqueueIssue(issue); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		slog.Error("mention task enqueue failed: agent not found", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
@@ -2431,6 +2458,9 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 	issue, err := s.Queries.GetIssue(ctx, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("load issue: %w", err)
+	}
+	if err := s.CanEnqueueIssue(issue); err != nil {
+		return nil, err
 	}
 
 	// Determine the target agent for the rerun.

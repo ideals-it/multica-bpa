@@ -40,3 +40,15 @@ Added a pure BPA policy layer based on the `Safe Outputs` gate pattern from
 GitHub Agentic Workflows: deny an explicitly marked production action until a
 human approves the exact plan fingerprint; a changed plan invalidates approval.
 This policy does not introduce a workflow engine or dispatch work itself.
+
+The full role and evidence template is adapted from the public Routa workflow:
+Team Lead corresponds to its coordinator, specialist roles to its implementor,
+and Quality to its independent gate. Multica's native stages remain the
+orchestration primitive.
+
+## 2026-07-13 — Production workflow API and dispatch gate
+
+Added local BPA endpoints to start a template, request an approval, read its
+state, and record a human decision. Direct assignment, mention-triggered work,
+and rerun now check the same fail-closed policy before creating or cancelling a
+task. No production action was dispatched.
