@@ -110,7 +110,7 @@ func TestStageProgressSummary(t *testing.T) {
 		child(3, "backlog"), child(3, "backlog"),
 	}
 	summary, next := stageProgressSummary(children, 1)
-	want := "Stage 1: 3/3 done; Stage 2: 0/4 done (next); Stage 3: 0/2 done"
+	want := "Етап 1: 3/3 завершено; Етап 2: 0/4 завершено — наступний; Етап 3: 0/2 завершено"
 	if summary != want {
 		t.Fatalf("summary = %q, want %q", summary, want)
 	}
@@ -138,7 +138,7 @@ func TestStageProgressSummary_SkipsUnstaged(t *testing.T) {
 		child(2, "backlog"),
 	}
 	summary, next := stageProgressSummary(children, 1)
-	want := "Stage 1: 2/2 done; Stage 2: 0/1 done (next)"
+	want := "Етап 1: 2/2 завершено; Етап 2: 0/1 завершено — наступний"
 	if summary != want {
 		t.Fatalf("summary = %q, want %q", summary, want)
 	}
@@ -152,30 +152,28 @@ func TestStageProgressSummary_SkipsUnstaged(t *testing.T) {
 // exists yet, because a lazily-created intermediate stage reaches nextStage==0
 // exactly like a true final stage does.
 func TestStageAdvanceInstruction(t *testing.T) {
-	const parentID = "parent-uuid"
-
 	t.Run("a known next stage points the leader at it", func(t *testing.T) {
-		got := stageAdvanceInstruction(3, parentID)
-		if !strings.Contains(got, "Stage 3 is next") {
+		got := stageAdvanceInstruction(3)
+		if !strings.Contains(got, "переглянути Етап 3") {
 			t.Fatalf("expected next-stage instruction, got %q", got)
 		}
 	})
 
 	t.Run("no created next stage does not assert finality", func(t *testing.T) {
-		got := stageAdvanceInstruction(0, parentID)
+		got := stageAdvanceInstruction(0)
 		// Regression guard for MUL-4062: an intermediate stage in a lazily
 		// created workflow also reaches nextStage==0, so the message must not
 		// claim this was definitively the final stage.
-		if strings.Contains(got, "This was the final stage") {
+		if strings.Contains(got, "це був останній етап") {
 			t.Fatalf("must not assert finality when the workflow shape is unknown, got %q", got)
 		}
 		// It must make clear that finishing the stage != the whole issue is
 		// done, and hand both paths (wrap up / create the next stage) to the
 		// leader.
-		if !strings.Contains(got, "does not mean the whole issue is done") {
+		if !strings.Contains(got, "закрити root або створити наступний етап") {
 			t.Fatalf("expected stage-done != issue-done framing, got %q", got)
 		}
-		if !strings.Contains(got, "next stage") {
+		if !strings.Contains(got, "наступний етап") {
 			t.Fatalf("expected create-next-stage guidance, got %q", got)
 		}
 	})

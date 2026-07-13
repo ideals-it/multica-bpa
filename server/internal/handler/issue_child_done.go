@@ -253,15 +253,13 @@ func (h *Handler) notifyParentsOfBatchChildDone(ctx context.Context, completed [
 //
 // `completed` is the representative finished child named in the comment.
 // `staged`/`closedStage` describe the closed barrier (closedStage is unused for
-// an unstaged set). `batch` selects batch-aware wording: a single update keeps
-// its historical byte-identical copy, while a batch that finished several
-// children at once must not claim "the last sub-issue just finished".
+// an unstaged set). `batch` changes the result summary so a simultaneous
+// completion does not misleadingly claim that one child finished last.
 func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db.Issue, children []db.Issue, staged bool, closedStage int32, batch bool) {
 	prefix := h.getIssuePrefix(ctx, completed.WorkspaceID)
 	identifier := prefix + "-" + strconv.Itoa(int(completed.Number))
 	childID := uuidToString(completed.ID)
 	title := sanitizeChildTitleForSystemComment(completed.Title)
-	parentID := uuidToString(parent.ID)
 
 	// Build the parent-assignee mention prefix. Empty when the parent has no
 	// assignee or the assignee row is missing (deleted member, archived
@@ -271,30 +269,24 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 	var content string
 	if staged {
 		summary, nextStage := stageProgressSummary(children, closedStage)
-		advance := stageAdvanceInstruction(nextStage, parentID)
+		advance := stageAdvanceInstruction(nextStage)
+		result := fmt.Sprintf("[%s](mention://issue/%s) — «%s»", identifier, childID, title)
 		if batch {
-			content = fmt.Sprintf(
-				"%sStage %d of this issue is complete — its sub-issues just finished together in a batch update, most recently [%s](mention://issue/%s) — \"%s\". Stage progress — %s.%s",
-				mentionPrefix, closedStage, identifier, childID, title, summary, advance,
-			)
-		} else {
-			content = fmt.Sprintf(
-				"%sStage %d of this issue is complete — its last sub-issue [%s](mention://issue/%s) — \"%s\" — just finished. Stage progress — %s.%s",
-				mentionPrefix, closedStage, identifier, childID, title, summary, advance,
-			)
+			result = "підзадачі етапу завершено; остання — " + result
 		}
+		content = fmt.Sprintf(
+			"%sЕтап %d завершено.\n\nРезультат: %s.\n\nСтан: %s.\n\nНаступне: %s",
+			mentionPrefix, closedStage, result, summary, advance,
+		)
 	} else {
+		result := fmt.Sprintf("[%s](mention://issue/%s) — «%s»", identifier, childID, title)
 		if batch {
-			content = fmt.Sprintf(
-				"%sAll sub-issues are complete — they just finished together in a batch update, most recently [%s](mention://issue/%s) — \"%s\". Continue the parent: synthesize the children's results and move it forward, or close it out if nothing remains.",
-				mentionPrefix, identifier, childID, title,
-			)
-		} else {
-			content = fmt.Sprintf(
-				"%sAll sub-issues are complete — the last one, [%s](mention://issue/%s) — \"%s\", just finished. Continue the parent: synthesize the children's results and move it forward, or close it out if nothing remains.",
-				mentionPrefix, identifier, childID, title,
-			)
+			result = "підзадачі завершено; остання — " + result
 		}
+		content = fmt.Sprintf(
+			"%sПідзадачі завершено.\n\nРезультат: %s.\n\nНаступне: %s",
+			mentionPrefix, result, stageAdvanceInstruction(0),
+		)
 	}
 
 	// author_type='system', author_id=zero UUID. The zero UUID is a valid 16
@@ -423,19 +415,19 @@ func stageProgressSummary(children []db.Issue, closedStage int32) (summary strin
 	parts := make([]string, 0, len(order))
 	for _, s := range order {
 		a := byStage[s]
-		label := fmt.Sprintf("Stage %d: %d/%d done", s, a.done, a.total)
+		label := fmt.Sprintf("Етап %d: %d/%d завершено", s, a.done, a.total)
 		if nextStage == 0 && s > closedStage && a.done < a.total {
 			nextStage = s
-			label += " (next)"
+			label += " — наступний"
 		}
 		parts = append(parts, label)
 	}
 	return strings.Join(parts, "; "), nextStage
 }
 
-// stageAdvanceInstruction returns the trailing instruction appended to a
-// staged child-done system comment, given the next stage with pending work
-// among the sub-issues that currently exist (nextStage, 0 = none).
+// stageAdvanceInstruction returns a concise next step for a staged child-done
+// system comment, given the next stage with pending work among the sub-issues
+// that currently exist (nextStage, 0 = none).
 //
 //   - nextStage > 0: a later stage with unfinished work already exists, so
 //     point the leader at it.
@@ -445,18 +437,16 @@ func stageProgressSummary(children []db.Issue, closedStage int32) (summary strin
 //     and often created lazily (stage N+1's sub-issues are only written after
 //     stage N produces the inputs they depend on), so an intermediate stage in
 //     such a pipeline reaches nextStage == 0 exactly like a true final stage
-//     does. The old wording ("This was the final stage. Wrap up the parent")
-//     asserted a finality the server cannot know and pushed leaders to wrap up
-//     mid-workflow (MUL-4062 / #4927). The message now names both possibilities
-//     and hands the create-next-vs-wrap-up decision back to the leader.
-func stageAdvanceInstruction(nextStage int32, parentID string) string {
+//     does. The message names both possibilities and hands the create-next-vs-
+//     wrap-up decision back to the leader (MUL-4062 / #4927).
+func stageAdvanceInstruction(nextStage int32) string {
 	if nextStage > 0 {
 		return fmt.Sprintf(
-			" Stage %d is next. Review the full layout with `multica issue children %s`, and if Stage %d's dependencies are satisfied promote its `backlog` sub-issues to `todo` to continue. Read each sub-issue's description first and only promote items whose stated dependencies are already met — do not rely on this parent's higher-level breakdown alone. If a description conflicts with that breakdown, leave it `backlog` and post a comment to confirm first.",
-			nextStage, parentID, nextStage,
+			"переглянути Етап %d і, якщо залежності виконані, розпочати його.",
+			nextStage,
 		)
 	}
-	return " Completing this stage does not mean the whole issue is done. Decide whether the issue is actually complete — if so, wrap up the parent (synthesize the results and move it forward, or close it out) — or whether the next stage still needs to be created, in which case create that stage and its sub-issues now."
+	return "перевірити результат: закрити root або створити наступний етап."
 }
 
 // sanitizeChildTitleForSystemComment removes mention-style markdown from a

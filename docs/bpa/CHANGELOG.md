@@ -23,3 +23,13 @@ Verified the template on the fork's local backend and isolated database:
 - Stage 2 completion woke Lead again and the root task closed as `done`.
 
 No production service, data, configuration, IAM, or secret was touched.
+
+## 2026-07-13 — System handoff comment formatting
+
+Replaced verbose English child-stage system comments with concise Ukrainian
+sections separated by blank lines: `Результат`, `Стан` (for staged work), and
+`Наступне`. The stage barrier, parent wake, mentions, and dispatch behavior are
+unchanged.
+
+Verified live on the isolated fork backend with a root and Stage 1 child. No
+agent, production service, data, configuration, IAM, or secret was touched.
