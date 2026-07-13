@@ -12,3 +12,14 @@ Added the first fork-specific workflow asset:
 
 No scheduler, workflow engine, custom status, comment event protocol, runtime,
 or production configuration was added or changed.
+
+## 2026-07-13 — Isolated live routing verification
+
+Verified the template on the fork's local backend and isolated database:
+
+- Lead, specialist, and Quality tasks were dispatched by the local runtime;
+- Stage 1 completion woke the root Lead task;
+- Stage 2 remained parked until explicitly promoted to `todo`;
+- Stage 2 completion woke Lead again and the root task closed as `done`.
+
+No production service, data, configuration, IAM, or secret was touched.
