@@ -9,18 +9,13 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-const maxBPAIssueAncestorDepth = 32
-
 // bpaRoot returns the workflow root for an issue and whether that root has an
 // enabled BPA template. BPA authority always follows the root: children hold
 // delivery details only and must not become independent routing authorities.
 func (h *Handler) bpaRoot(ctx context.Context, issue db.Issue) (db.Issue, bool, error) {
 	root := issue
 	seen := map[string]struct{}{uuidToString(issue.ID): {}}
-	for depth := 0; root.ParentIssueID.Valid; depth++ {
-		if depth >= maxBPAIssueAncestorDepth {
-			return db.Issue{}, false, fmt.Errorf("BPA issue hierarchy exceeds the supported depth")
-		}
+	for root.ParentIssueID.Valid {
 		parentID := uuidToString(root.ParentIssueID)
 		if _, duplicate := seen[parentID]; duplicate {
 			return db.Issue{}, false, fmt.Errorf("BPA issue hierarchy contains a cycle")

@@ -102,17 +102,15 @@ func (s *TaskService) CanEnqueueIssue(ctx context.Context, issue db.Issue, targe
 	return nil
 }
 
-const maxBPAAncestorDepth = 32
-
 func (s *TaskService) bpaWorkflowRoot(ctx context.Context, issue db.Issue) (db.Issue, error) {
 	workflowIssue := issue
 	seen := map[string]struct{}{util.UUIDToString(issue.ID): {}}
-	for depth := 0; workflowIssue.ParentIssueID.Valid; depth++ {
+	for workflowIssue.ParentIssueID.Valid {
 		// BPA state belongs to the main issue. Children intentionally carry
 		// only their own delivery metadata, so consulting an immediate child
 		// would let a mention, reassignment, or rerun bypass the root's
 		// production approval gate.
-		if depth >= maxBPAAncestorDepth || s.Queries == nil {
+		if s.Queries == nil {
 			return db.Issue{}, fmt.Errorf("BPA main issue cannot be resolved")
 		}
 		parentID := util.UUIDToString(workflowIssue.ParentIssueID)
