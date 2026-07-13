@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +132,54 @@ func TestBPARootCannotCloseWhileChildIsOpen(t *testing.T) {
 	testHandler.UpdateIssue(w, update)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestBPARootCompletionRequiresLeadFinalSummary(t *testing.T) {
+	ctx := context.Background()
+	issueID := createMetadataTestIssue(t, "BPA root needs final summary")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var leadID string
+	if err := testPool.QueryRow(ctx, `SELECT id FROM agent WHERE workspace_id = $1 AND name = 'Handler Test Agent'`, testWorkspaceID).Scan(&leadID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, issue.ID, leadID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.Queries.GetIssue(ctx, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest("POST", "/", nil), issue, map[string]any{"bpa.template": "standard"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := testHandler.validateBPACompletion(ctx, issue); err == nil || !strings.Contains(err.Error(), "final root summary") {
+		t.Fatalf("completion without final summary error = %v, want final summary conflict", err)
+	}
+
+	_, err = testHandler.Queries.CreateComment(ctx, db.CreateCommentParams{
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+		AuthorType:  "agent",
+		AuthorID:    parseUUID(leadID),
+		Content: "**Що було не так:** transient Google API error became 500\n\n" +
+			"**Що змінили:** return 503 after retries\n\n" +
+			"**Що перевірили:** 14 tests passed\n\n" +
+			"**Результат:** deploy is ready\n\n" +
+			"**Ризик / наступне:** немає відомого",
+		Type: "comment",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := testHandler.validateBPACompletion(ctx, issue); err != nil {
+		t.Fatalf("completion with final summary: %v", err)
 	}
 }
 

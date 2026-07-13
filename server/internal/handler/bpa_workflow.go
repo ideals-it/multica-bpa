@@ -172,6 +172,28 @@ func (h *Handler) validateBPACompletion(ctx context.Context, issue db.Issue) err
 	if hasOpenChildren {
 		return fmt.Errorf("BPA main task cannot be closed while child tasks are still open")
 	}
+	return h.validateBPAFinalRootSummary(ctx, issue)
+}
+
+func (h *Handler) validateBPAFinalRootSummary(ctx context.Context, issue db.Issue) error {
+	if issue.ParentIssueID.Valid {
+		return nil
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil || !state.Enabled() {
+		return err
+	}
+	comments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+		Limit:       2000,
+	})
+	if err != nil {
+		return fmt.Errorf("load BPA root comments: %w", err)
+	}
+	if !hasBPAFinalRootSummary(issue, comments) {
+		return fmt.Errorf("BPA main task needs a final root summary from Team Lead before completion")
+	}
 	return nil
 }
 
