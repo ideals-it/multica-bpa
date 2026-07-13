@@ -247,12 +247,36 @@ func (h *Handler) queueBPAArchivist(ctx context.Context, issue db.Issue, event s
 			issue = updated
 		}
 	}
+	if h.hasActiveBPADeliveryTask(ctx, issue.ID, archivistID) {
+		return
+	}
 	if h.hasActiveTaskForIssueAndAgent(ctx, issue.ID, archivistID) {
 		return
 	}
 	if _, err := h.TaskService.EnqueueTaskForBPAArchivist(ctx, issue, archivistID); err != nil {
 		slog.Debug("BPA Archivist enqueue skipped", "issue_id", uuidToString(issue.ID), "error", err)
 	}
+}
+
+// hasActiveBPADeliveryTask keeps read-only archive work from competing for a
+// local project directory while Lead or a specialist is still delivering the
+// current ticket. A later completion event will enqueue the Archivist once the
+// delivery chain becomes idle.
+func (h *Handler) hasActiveBPADeliveryTask(ctx context.Context, issueID, archivistID pgtype.UUID) bool {
+	tasks, err := h.Queries.ListTasksByIssue(ctx, issueID)
+	if err != nil {
+		return true
+	}
+	for _, task := range tasks {
+		if task.AgentID == archivistID {
+			continue
+		}
+		switch task.Status {
+		case "queued", "dispatched", "running", "waiting_local_directory":
+			return true
+		}
+	}
+	return false
 }
 
 // resolveBPAArchivist prefers an explicit human-configured agent ID. When it
@@ -329,6 +353,12 @@ func (h *Handler) queueRootAssigneeAfterSpecialistCompletion(ctx context.Context
 		return
 	}
 	if issue.Status == "done" || issue.Status == "cancelled" {
+		return
+	}
+	// Archivist is a read-only sidecar, not a delivery specialist. Its
+	// completion must never wake the Lead, otherwise archive and Lead runs
+	// alternate forever and contend for the same local directory.
+	if isConfiguredBPAArchivist(issue, uuidToString(task.AgentID)) {
 		return
 	}
 

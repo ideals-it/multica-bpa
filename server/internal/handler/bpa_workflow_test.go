@@ -631,6 +631,38 @@ func TestQueueBPAArchivistDeduplicatesPendingRuns(t *testing.T) {
 	}
 }
 
+func TestQueueBPAArchivistWaitsUntilDeliveryIsIdle(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	leadID := createHandlerTestAgent(t, "ArchivistIdleLead", []byte("[]"))
+	workerID := createHandlerTestAgent(t, "ArchivistIdleWorker", []byte("[]"))
+	archivistID := createHandlerTestAgent(t, "ArchivistIdleArchivist", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92142, "archivist waits for delivery")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template":           string(bpa.TemplateStandard),
+		"bpa.archivist_agent_id": archivistID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertRunningIssueTask(t, workerID, issueID)
+
+	testHandler.queueBPAArchivist(ctx, issue, "worker_active")
+	var count int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued','dispatched','running','waiting_local_directory')`, issue.ID, archivistID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("Archivist must wait for active delivery, got %d active archive task(s)", count)
+	}
+}
+
 func TestQueueBPAArchivistWaitsForProductionApproval(t *testing.T) {
 	ctx := context.Background()
 	issueID := createMetadataTestIssue(t, "BPA Archivist approval gate")
@@ -697,6 +729,39 @@ func TestQueueBPAArchivistAfterNonArchivistTaskCompletion(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("Archivist completion requeued itself: %d runs", count)
+	}
+}
+
+func TestArchivistCompletionDoesNotWakeRootLead(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	leadID := createHandlerTestAgent(t, "ArchivistWakeLead", []byte("[]"))
+	archivistID := createHandlerTestAgent(t, "ArchivistWakeArchivist", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92143, "archivist completion must not wake lead")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template":           string(bpa.TemplateStandard),
+		"bpa.archivist_agent_id": archivistID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	taskID := insertRunningIssueTask(t, archivistID, issueID)
+	if w := completeTaskViaHandler(t, taskID, "archive metadata updated"); w.Code != http.StatusOK {
+		t.Fatalf("complete Archivist task: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var count int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued','dispatched','running','waiting_local_directory')`, issue.ID, leadID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("Archivist completion must not wake root Lead, got %d task(s)", count)
 	}
 }
 

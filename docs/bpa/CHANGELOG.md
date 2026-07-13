@@ -1,5 +1,17 @@
 # BPA fork changelog
 
+## 2026-07-13 — Archivist yields to delivery and cannot wake Lead
+
+Archivist no longer queues or occupies the shared local project directory while
+Lead or a delivery specialist has an active task on the same BPA root. Comment
+triggering now happens before the archive scheduling check, so a new agent run
+is visible to that check. The Archivist refresh is queued only after the
+delivery chain becomes idle. Archivist completion is never treated as a
+specialist handoff, so it cannot start a Lead → Archivist loop.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-13 — Emoji approval for Production review
 
 On the assigned Lead's root-level Production approval comment, a member's 👍

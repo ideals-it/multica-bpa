@@ -1360,8 +1360,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
 		"issue_status":        issue.Status,
 	})
-	h.queueBPAArchivist(r.Context(), issue, "comment_created")
-
 	// A reply in a resolved thread re-opens it. Done after CreateComment commits
 	// so the reply is visible regardless of the unresolve outcome. Shared with
 	// the agent task path (TaskService.createAgentComment) — both reply paths
@@ -1373,6 +1371,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 
 	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
 	h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs)
+	h.queueBPAArchivist(r.Context(), issue, "comment_created")
 
 	writeJSON(w, http.StatusCreated, resp)
 }
