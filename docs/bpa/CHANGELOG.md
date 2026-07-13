@@ -33,3 +33,10 @@ unchanged.
 
 Verified live on the isolated fork backend with a root and Stage 1 child. No
 agent, production service, data, configuration, IAM, or secret was touched.
+
+## 2026-07-13 — Production approval policy foundation
+
+Added a pure BPA policy layer based on the `Safe Outputs` gate pattern from
+GitHub Agentic Workflows: deny an explicitly marked production action until a
+human approves the exact plan fingerprint; a changed plan invalidates approval.
+This policy does not introduce a workflow engine or dispatch work itself.
