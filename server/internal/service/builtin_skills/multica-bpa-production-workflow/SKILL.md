@@ -1,85 +1,65 @@
 ---
 name: multica-bpa-production-workflow
-description: "Use when Team Lead coordinates a production-impacting task through preparation, Quality, and one explicit human approval."
+description: "Use when Team Lead coordinates a production-impacting task with one explicit human approval."
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
 
 # BPA production workflow
 
-Use only when the root task can change production, data, configuration, IAM,
-secrets, deploy a revision, or make an external write.
+Use only when the root can change production, data, configuration, IAM,
+secrets, deploy a revision, or make an external write. Keep preparation,
+Quality, approval, execution, and postflight on **one root issue** unless work
+has independently deliverable parallel streams.
 
 ```text
-Lead → specialist → Quality → Lead
+Lead → specialist → Quality → Lead → human approval → specialist → Quality → Lead
 ```
 
-Team Lead owns the root task. Specialists own one child result. Quality checks
-the stated criterion independently. Lead writes the only root-level summary.
+## Status contract
 
-## Prepare safely
+- `In Progress` while preparation, execution, or Quality work is active.
+- `In Review` only while **Vitaliy Ustymenko** must approve or reject the
+  current production scope.
+- `Done` after the approved action and required postflight are accepted.
+- `Blocked` with a named missing decision or input when work cannot continue.
 
-The first children may investigate, prepare a change, test locally, or prepare
-a reversible plan. На цьому етапі жоден агент не виконує production-дію.
+## Same-root flow
 
-Use the normal staged children: specialist in Stage 1, Quality in Stage 2. Do
-not use tags, scheduler jobs, duplicate children, or progress-only comments to
-move the work.
-
-Each completed child has один короткий коментар:
+1. Lead moves the root to `In Progress` and mentions the preparation
+   specialist on the root. Preparation may investigate, test locally, prepare
+   a reversible plan, or make a focused local commit. It never changes
+   production. An action owner always uses a clickable agent mention, for
+   example `**[@AT Builder](mention://agent/<agent-id>)**`.
+2. The specialist posts one result on the root and mentions Team Lead. Lead
+   mentions Quality on that same root; Quality checks the plan/evidence and
+   returns one verdict to Lead.
+3. Only after Quality accepts, Lead moves the root to `In Review` and posts a
+   concise approval request for **[@Vitaliy Ustymenko](mention://member/7c237dcc-c29c-4c66-8ed0-bbae2339e58e)**:
 
 ```text
-Результат: <готовий результат>
+**Дія:** <what will be done>
 
-Перевірка: <що перевірено>
+**Вплив:** <service or data effect>
 
-Commit: <SHA, або "no repo changes: <причина>">
+**Відкат:** <how to reverse it>
 
-Ризик: <залишковий ризик>
-
-Наступне: Team Lead виконує наступний етап.
+**Ризик:** <real residual risk>
 ```
 
-## Human approval
+4. A matching human approval lets Lead move the root back to `In Progress` and
+   mention the execution specialist on the same root. The server still binds
+   approval to the current ticket scope and blocks an unapproved run.
+5. The execution specialist and Quality post their result/postflight on the
+   root. Lead closes it as `Done` or records the exact blocker.
 
-After Quality accepts the preparation, Team Lead creates one concise approval
-request. Write it for the human owner, not for an engineer:
+Child issues are optional only for independent parallel deliverables. Do not
+create a child merely to transfer work between Lead, specialist, Quality, or
+GitHub Ops.
 
-```text
-Дія: <що буде зроблено>
-
-Вплив: <що зміниться для сервісу або даних>
-
-Відкат: <як повернути попередній стан>
-
-Ризик: <короткий реальний ризик>
-```
-
-Lead moves the root ticket to **In Review** and posts **Потрібне погодження**.
-The human replies with `Approve` or `Погоджую`. No agent starts an execution child,
-deploys, or changes production before that reply. A changed ticket scope
-requires a new approval.
-
-Only after the human owner explicitly approves the current ticket scope may
-Lead create the single execution child. The specialist reports the result,
-Quality always performs a postflight check, and Lead closes the root with one
-short summary.
-
-The agent that changes a repository makes its own focused local commit before
-handoff. If the approved task needs publication, Lead creates a separate
-GitHub Ops child for push, PR, or merge. GitHub Ops never decides scope or
-approval itself.
-
-n8n Prod is the execution specialist for approved n8n production work.
-EventCatalog documents the resulting service or event-contract change only
-when Lead includes that deliverable in the ticket scope.
-
-If approval is rejected or work is unsafe, set the root to `blocked` and name
-the exact decision or input needed. Do not leave an in-progress task silent.
-
-For a blocker before approval or during execution, mark the child `blocked`.
-Multica wakes Lead on the root. Do not tag a peer agent to transfer work; Lead
-owns all routing.
+The agent that changes a repository creates a focused local commit before its
+handoff. GitHub Ops is mentioned on the same root only for an approved
+publication action. n8n Prod is the specialist for n8n production work.
 
 The backend contract is mapped in
 `references/production-workflow-source-map.md`.

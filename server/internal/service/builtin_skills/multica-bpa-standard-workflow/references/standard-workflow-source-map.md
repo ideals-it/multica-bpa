@@ -1,16 +1,17 @@
 # BPA standard workflow source map
 
-Evidence for the native Lead → specialist → Quality → Lead template. Recheck
-these references after an upstream merge before changing the skill.
+Evidence for the single-ticket Lead → specialist → Quality → Lead template.
+Recheck these references after an upstream merge before changing the skill.
 
 | Contract | Source |
 | --- | --- |
-| `backlog` parks an agent-assigned issue; transition from backlog to an active status starts the ordinary run path | `server/internal/service/issue_trigger.go:89-115` |
-| Issue creation and update consult `WillEnqueueRun` before dispatch | `server/internal/handler/issue.go:2657-2666`, `server/internal/handler/issue.go:3162-3171` |
-| A terminal child completion posts a parent system comment and dispatches the parent assignee | `server/internal/handler/issue_child_done.go:62-66`, `:334`, `:536-586` |
-| The parent is woken only when the lowest unfinished child stage is terminal | `server/internal/handler/issue_child_done.go:370-430` |
-| Child stages are persisted by the issue-stage migration | `server/migrations/123_issue_stage.up.sql` |
-| The issue CLI supports create/update with a stage | `server/cmd/multica/cmd_issue.go` (`--stage` flag) |
+| An explicit `mention://agent/...` in an issue comment resolves to a runnable agent task on that same issue | `server/internal/handler/comment.go` (`computeCommentAgentTriggers`, `enqueueSingleCommentTrigger`) |
+| Different agents may have tasks on one issue while one agent remains serialized with itself | `server/pkg/db/queries/agent.sql` (`ClaimAgentTask`) |
+| Direct assignment, mention, and rerun share BPA production gating | `server/internal/service/task.go` (`CanEnqueueIssue`) |
+| Queued work moves an inactive native ticket to `In Progress` while preserving review, done, and blocked states | `server/internal/service/task.go` (`markIssueInProgressAfterQueue`) |
+| Native issue updates preserve the existing board statuses | `server/internal/handler/issue.go` (`UpdateIssue`) |
 
-The template intentionally relies only on these existing contracts. It adds no
-runtime message transport, workflow engine, new issue status, or scheduler.
+The template deliberately uses native issue comments, task runs, and statuses.
+It adds no child stage, scheduler, event protocol, or custom board status for a
+single deliverable. Child issues remain a native option for independently
+deliverable work.

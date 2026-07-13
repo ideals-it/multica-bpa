@@ -7,33 +7,36 @@ allowed-tools: Bash(multica *)
 
 # BPA investigation workflow
 
+Keep a focused investigation in **one root issue**:
+
 ```text
 Lead → Investigator → Quality → Lead
 ```
 
-Lead owns the root. Investigator works read-only against logs, code,
-configuration, and run history. Quality checks the evidence, not a fix.
-
-The Investigator posts one result:
+Lead moves the root to `In Progress` and mentions the Investigator on the root
+with a clickable action mention such as
+`**[@AT Builder](mention://agent/<agent-id>)**`.
+The Investigator is read-only against logs, code, configuration, and run
+history. It posts one evidence report on the root and mentions Team Lead.
+Lead then mentions Quality on the same root to test the evidence, not a fix.
 
 ```text
-Симптом: <підтверджений факт>
+**Симптом:** <confirmed fact>
 
-Докази: <посилання або точні спостереження>
+**Докази:** <links or exact observations>
 
-Гіпотези: <перевірені причини та результат перевірки>
+**Гіпотези:** <tested causes and result>
 
-Висновок: <підтверджена причина або "недостатньо даних">
+**Висновок:** <confirmed cause or "недостатньо даних">
 
-Наступне: Team Lead створює окрему задачу або блокує з потрібними даними.
+**Наступне:** <bold owner and exact action>
 ```
 
-Investigation is read-only: it does not deploy, change production data, edit
-configuration, and не створює implementation-child. If a fix is needed, Lead
-creates a new Standard or Production root task after Quality accepts the
-evidence. If evidence is insufficient, set the root to `blocked` and name the
-exact missing data.
+Quality returns one verdict to Lead. Lead closes the root as `Done` when the
+answer is evidenced, or sets it `Blocked` with the exact missing data. If a fix
+is needed, Lead creates a separate Standard or Production root task; an
+investigation не створює implementation-child.
 
-If the Investigator needs a decision before evidence is complete, it marks its
-child `blocked`; Multica wakes Lead on the root. It never routes work directly
-to another specialist.
+Child issues are optional only for independent evidence streams that need their
+own readable deliverable. Do not create one for the Investigator or Quality
+handoff.

@@ -788,6 +788,37 @@ func headShaText(sha string) pgtype.Text {
 	return pgtype.Text{String: sha, Valid: sha != ""}
 }
 
+// shouldMoveQueuedIssueToInProgress keeps board state aligned with actual
+// agent work. Human decision, completion, and blocked states are intentional
+// states and must never be overwritten merely because a task was queued.
+func shouldMoveQueuedIssueToInProgress(status string) bool {
+	return status == "todo" || status == "backlog"
+}
+
+// markIssueInProgressAfterQueue moves inactive work onto the active board
+// column only after its agent task was persisted successfully. It deliberately
+// does not create activity or notifications: this is an execution-state sync,
+// not a user-authored issue transition.
+func (s *TaskService) markIssueInProgressAfterQueue(ctx context.Context, issue db.Issue) {
+	if !shouldMoveQueuedIssueToInProgress(issue.Status) {
+		return
+	}
+
+	updated, err := s.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+		ID:          issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+		Status:      "in_progress",
+	})
+	if err != nil {
+		slog.Warn("issue status sync after task enqueue failed",
+			"issue_id", util.UUIDToString(issue.ID), "error", err)
+		return
+	}
+	if s.Bus != nil {
+		s.broadcastIssueUpdated(updated, issue.Status)
+	}
+}
+
 // ResolveIssueReviewSHAParam is ResolveIssueReviewSHA wrapped as the pgtype.Text
 // the dedup queries take, so both service- and handler-package call sites can
 // key dedup on the reviewed head with a single call (TEN-356).
@@ -845,6 +876,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}
+	s.markIssueInProgressAfterQueue(ctx, issue)
 
 	slog.Info("task enqueued",
 		"task_id", util.UUIDToString(task.ID),
@@ -952,6 +984,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}
+	s.markIssueInProgressAfterQueue(ctx, issue)
 
 	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
 	// See EnqueueTaskForIssue for ordering rationale.

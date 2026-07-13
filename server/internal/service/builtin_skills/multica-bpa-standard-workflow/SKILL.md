@@ -1,137 +1,77 @@
 ---
 name: multica-bpa-standard-workflow
-description: "Use when Team Lead coordinates a small, non-production task through one specialist and one Quality review using Multica child stages."
+description: "Use when Team Lead coordinates one small, non-production deliverable in a single Multica ticket."
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
 
 # BPA standard workflow
 
-Use this only for a small, non-production task with one clear deliverable.
-The flow is:
+Use this for one clear, non-production deliverable. Keep all work in **one root issue**:
 
 ```text
 Lead → specialist → Quality → Lead
 ```
 
-This is a native Multica flow. Do not create a scheduler, an autopilot, an
-event protocol, or `@`-mentions to move work between agents. Child completion
-and the stage barrier wake the root assignee automatically.
+The same root issue contains the task description, agent handoffs, commit,
+verification, risk, and final decision. A different agent is a new run on the
+same issue, not a reason to create a child issue.
 
 The backend behavior behind this workflow is traced in
 `references/standard-workflow-source-map.md`.
 
-## Ownership
+## Status contract
 
-- Team Lead owns the root issue from start to finish. Only Team Lead creates
-  children, promotes a parked stage, and closes the root.
-- A specialist owns one child and one durable result. Use Documentation Writer,
-  Builder, n8n Prod, or GitHub Ops only when its specialty matches the work.
-- The agent that changes a repository owns one focused local commit after its
-  logical part is complete. Its handoff includes the commit SHA and checks.
-  If it made no repository change, it says `no repo changes` and why.
-- GitHub Ops owns push, PR, merge, and GitHub-only publication. It does not
-  take over another agent's local commit merely for ceremony.
-- n8n Prod owns n8n workflow diagnosis, change preparation, and n8n-specific
-  verification. It does not deploy or activate production changes without the
-  Production workflow's approved execution stage.
-- EventCatalog owns service and workflow documentation, event contracts, and
-  catalog verification. It does not silently change runtime behavior.
-- Quality is a separate child issue. It reviews the result; it is never an
-  assignee swap on the specialist child.
-- The root must be assigned to Team Lead before this workflow starts.
+- Before Lead routes work: `Todo`.
+- Once Lead starts or routes work: `In Progress`.
+- When only **Vitaliy Ustymenko** must decide or approve: `In Review`.
+- After Lead accepts the Quality result: `Done`.
+- When a named outside action is required: `Blocked`.
 
-## Create the two-stage plan
+Do not leave an active root in `Todo` or `In Progress` without a named next
+owner.
 
-On the root issue, Team Lead first writes the success criterion in the issue
-description. Then create exactly these two children. Replace the placeholders
-with real IDs and a result-focused title.
+## Single-ticket handoff
 
-```bash
-# Stage 1 starts now.
-multica issue create \
-  --title "Prepare <deliverable>" \
-  --parent <root-id> \
-  --assignee <specialist-id> \
-  --stage 1 --status todo
+1. Lead writes one short plan on the root, moves it to `In Progress`, and
+   names the specialist with a clickable action mention, for example
+   `**[@AT Builder](mention://agent/<builder-id>)**`.
+2. The specialist works only on the root. It makes a focused local commit when
+   repository files changed, then posts one final result on the root and
+   mentions `**[@AT Team Lead](mention://agent/<lead-id>)**`.
+3. Lead reads that result and, on the same root, mentions
+   `**[@AT Quality](mention://agent/<quality-id>)**` for an independent check.
+4. Quality posts one verdict on the root and mentions Team Lead.
+5. Lead either closes the root as `Done`, sets a named `Blocked` state, or
+   moves it to `In Review` when a human decision is genuinely required.
 
-# Stage 2 is created now but stays parked.
-multica issue create \
-  --title "Quality check <deliverable>" \
-  --parent <root-id> \
-  --assignee <quality-id> \
-  --stage 2 --status backlog
-```
-
-After creating the children, Lead stops work. Do not add a progress comment and
-do not tag the specialist. Stage 1 finishing wakes Lead through Multica.
-
-## Specialist completion
-
-The specialist completes only its own child. Before marking it `done`, verify
-the deliverable against the root's success criterion and post exactly one
-handoff comment:
+Every material comment uses separate Markdown paragraphs:
 
 ```text
-Результат: <what is ready, with a link or file when relevant>
+**Результат:** <what is ready>
 
-Перевірка: <how it was checked>
+**Перевірка:** <how it was checked>
 
-Commit: <SHA, or "no repo changes: <reason>">
+**Ризик:** <remaining risk or "немає відомого">
 
-Ризик: <remaining risk, or "немає відомого">
-
-Наступне: Team Lead запускає Quality-перевірку.
+**Наступне:** <bold owner and exact action>
 ```
 
-Do not create another child, change the root assignee, or comment merely to say
-that work started. Then mark the specialist child `done`.
+## When child issues are optional
 
-## Question or blocker
-
-Normal handoff never needs a tag: completion wakes Lead. If work cannot
-continue or needs a decision, write one short child comment and mark the child
-`blocked`. Multica wakes Lead automatically. Never tag another specialist or
-Quality to route work.
-
-## Lead promotes Quality
-
-When the Stage 1 barrier closes, Multica wakes Team Lead on the root. Lead reads
-the result and either records one concrete blocker or promotes the existing
-Quality child:
-
-```bash
-multica issue status <quality-child-id> todo
-```
-
-Do not create a duplicate Quality child and do not manually run Quality before
-the specialist result exists.
-
-## Quality completion and Lead closeout
-
-Quality checks the stated criterion, then posts one comment on its own child:
-
-```text
-Результат: <accepted result, or the single concrete defect>
-
-Висновок: Прийнято / Потрібні зміни
-
-Перевірка: <what Quality checked>
-
-Ризик: <remaining risk, or "немає відомого">
-
-Наступне: Team Lead закриває root-задачу.
-```
-
-Quality marks its child `done`. The Stage 2 barrier wakes Lead. Lead reads both
-child results and either closes the root or creates one explicitly named
-follow-up child. Never close the root only because a child has changed status.
+Child issues are optional. Create one only when it has an independently useful
+deliverable: parallel work, a different repository/system with its own
+acceptance, or a substantial investigation that must remain separately
+readable. Do not create a child merely for a specialist, Quality, GitHub Ops,
+or a workflow stage.
 
 ## Boundaries
 
-This template does not authorize deployment, production configuration or data
-changes, IAM changes, secret changes, or an external write. For any such work,
-stop and ask the human owner for approval before creating an execution child.
-
-If work cannot continue, use `blocked` and name the owner plus the exact action
-needed. Do not leave an in-progress issue silent.
+- Team Lead owns the root issue from start to finish.
+- A specialist owns one scoped result. GitHub Ops owns only publication of an
+  existing focused commit; it does not take over implementation.
+- n8n Prod does not deploy or activate production changes through this
+  standard template.
+- This template does not authorize deployment, production configuration/data
+  changes, IAM changes, secrets, or external writes. Use the Production
+  workflow when any of those actions are in scope.

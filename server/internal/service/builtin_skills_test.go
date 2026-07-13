@@ -255,7 +255,7 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 	}
 }
 
-func TestBPAStandardWorkflowSkillTeachesLeadCenteredStages(t *testing.T) {
+func TestBPAStandardWorkflowSkillTeachesSingleTicketHandoffs(t *testing.T) {
 	skill, ok := findSkill(t, "multica-bpa-standard-workflow")
 	if !ok {
 		return
@@ -271,10 +271,12 @@ func TestBPAStandardWorkflowSkillTeachesLeadCenteredStages(t *testing.T) {
 
 	mustContain := []string{
 		"Lead → specialist → Quality → Lead",
-		"--stage 1 --status todo",
-		"--stage 2 --status backlog",
+		"one root issue",
+		"Before Lead routes work: `Todo`",
+		"After Lead accepts the Quality result: `Done`",
+		"Child issues are optional",
 		"Team Lead owns the root issue",
-		"Quality is a separate child issue",
+		"mention://agent/",
 		"Результат:",
 		"Перевірка:",
 		"Ризик:",
@@ -284,6 +286,11 @@ func TestBPAStandardWorkflowSkillTeachesLeadCenteredStages(t *testing.T) {
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
 			t.Errorf("BPA standard workflow skill missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"--stage 1 --status todo", "--stage 2 --status backlog", "Quality is a separate child issue"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("single-ticket standard workflow still requires %q", forbidden)
 		}
 	}
 	if !skillHasFile(skill, "references/standard-workflow-source-map.md") {
@@ -299,15 +306,20 @@ func TestBPAProductionWorkflowSkillTeachesApprovalBoundaries(t *testing.T) {
 	_, body, _ := splitFrontmatter(skill.Content)
 	mustContain := []string{
 		"Lead → specialist → Quality → Lead",
-		"Потрібне погодження",
-		"не виконує production-дію",
-		"один короткий коментар",
+		"one root issue",
+		"mention://agent/",
+		"current production scope",
+		"It never changes",
+		"Child issues are optional only for independent parallel deliverables.",
 		"references/production-workflow-source-map.md",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
 			t.Errorf("BPA production workflow skill missing %q", want)
 		}
+	}
+	if strings.Contains(body, "normal staged children") {
+		t.Error("production workflow still requires staged children for handoffs")
 	}
 	if !skillHasFile(skill, "references/production-workflow-source-map.md") {
 		t.Error("BPA production workflow skill is missing its source map")
@@ -320,7 +332,7 @@ func TestBPAInvestigationWorkflowIsEvidenceOnly(t *testing.T) {
 		return
 	}
 	_, body, _ := splitFrontmatter(skill.Content)
-	for _, want := range []string{"Lead → Investigator → Quality → Lead", "read-only", "Гіпотези:", "не створює implementation-child"} {
+	for _, want := range []string{"Lead → Investigator → Quality → Lead", "one root issue", "mention://agent/", "read-only", "Гіпотези:", "не створює implementation-child"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("investigation workflow skill missing %q", want)
 		}

@@ -1,5 +1,26 @@
 # BPA fork changelog
 
+## 2026-07-13 — Single-ticket BPA execution and truthful board state
+
+Simplified the BPA templates without changing the UI, board columns, or
+predefined statuses:
+
+- Standard, Production, and Investigation now use one root ticket by default:
+  Lead → specialist → Quality → Lead;
+- a child ticket is allowed only for independently useful parallel work or a
+  separately readable deliverable, never merely for a role handoff;
+- a queued agent task moves `Todo` or `Backlog` to `In Progress` only after the
+  task is persisted; `In Review`, `Done`, and `Blocked` are preserved;
+- `In Review` is reserved for a real current decision by Vitaliy, not a future
+  safety guardrail such as “do not deploy without approval”;
+- live instructions for **AT Team Lead**, **AT Builder**, **AT Quality**,
+  **AT Documentation Writer**, **AT n8n Prod**, and **AT GitHub Ops** now use
+  same-ticket handoffs with explicit mentions.
+
+Verified with focused regression tests and the complete Go backend test suite.
+No UI, board/status definition, remote deployment, production service, data,
+IAM, or secret was changed.
+
 ## 2026-07-13 — Review hardening for BPA dispatch and authority
 
 Closed the independent review findings without changing the UI, board, or
