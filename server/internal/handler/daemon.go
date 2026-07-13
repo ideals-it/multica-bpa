@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -1090,6 +1091,7 @@ type heartbeatMetrics struct {
 func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supportsBatchImport bool) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
 	var m heartbeatMetrics
 	runtimeID := uuidToString(rt.ID)
+	wasOffline := rt.Status != "online"
 
 	updateStart := time.Now()
 	if err := h.recordHeartbeat(ctx, rt); err != nil {
@@ -1097,6 +1099,14 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 		return nil, m, err
 	}
 	m.UpdateMs = time.Since(updateStart).Milliseconds()
+	if wasOffline {
+		h.Bus.Publish(events.Event{
+			Type:        protocol.EventRuntimeOnline,
+			WorkspaceID: uuidToString(rt.WorkspaceID),
+			ActorType:   "system",
+			Payload:     map[string]any{"runtime_id": runtimeID},
+		})
+	}
 
 	slog.Debug("daemon heartbeat", "runtime_id", runtimeID)
 

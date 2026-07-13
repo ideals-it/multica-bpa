@@ -52,6 +52,34 @@ type AutopilotScheduleDispatcher interface {
 	) (*db.AutopilotRun, error)
 }
 
+type AutopilotRuntimeRetryDispatcher interface {
+	RecoverDueRuntimeDeferredRuns(ctx context.Context) error
+}
+
+const JobNameAutopilotRuntimeRetry = "autopilot_runtime_retry"
+
+func AutopilotRuntimeRetryJob(dispatcher AutopilotRuntimeRetryDispatcher) JobSpec {
+	return JobSpec{
+		Name:              JobNameAutopilotRuntimeRetry,
+		Cadence:           time.Minute,
+		CatchUpMode:       CatchUpLatestOnly,
+		CatchUpWindow:     12 * time.Hour,
+		RunTimeout:        time.Minute,
+		StaleTimeout:      2 * time.Minute,
+		HeartbeatInterval: 15 * time.Second,
+		AllowStaleReentry: true,
+		MaxAttempts:       3,
+		RetryBackoff:      []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute},
+		Scopes:            StaticScopes(ScopeGlobal),
+		Handler: func(ctx context.Context, _ HandlerInput) (HandlerResult, error) {
+			if err := dispatcher.RecoverDueRuntimeDeferredRuns(ctx); err != nil {
+				return HandlerResult{}, err
+			}
+			return HandlerResult{}, nil
+		},
+	}
+}
+
 // AutopilotScheduleDispatchJob returns the JobSpec that drives
 // scheduled Autopilot dispatch through the existing scheduler +
 // sys_cron_executions lease infrastructure. Replaces the legacy

@@ -1,5 +1,11 @@
 # BPA fork changelog
 
+## 2026-07-13 — Local runtime Autopilot recovery
+
+Added opt-in recovery for scheduled `run_only` Autopilots when a local runtime
+was offline. Recovery is bounded, limited to one successful run per Autopilot
+per scheduled day, and does not change board or UI behaviour.
+
 ## 2026-07-13 — Standard workflow template
 
 Added the first fork-specific workflow asset:

@@ -15,6 +15,20 @@ import (
 func registerAutopilotListeners(bus *events.Bus, svc *service.AutopilotService) {
 	ctx := context.Background()
 
+	bus.Subscribe(protocol.EventRuntimeOnline, func(e events.Event) {
+		payload, ok := e.Payload.(map[string]any)
+		if !ok {
+			return
+		}
+		runtimeID, _ := payload["runtime_id"].(string)
+		if runtimeID == "" {
+			return
+		}
+		if err := svc.RecoverRuntimeDeferredRuns(ctx, parseUUID(runtimeID)); err != nil {
+			slog.Warn("autopilot runtime retry recovery failed", "runtime_id", runtimeID, "error", err)
+		}
+	})
+
 	// When an issue with origin_type='autopilot' reaches a terminal status,
 	// update the corresponding autopilot run.
 	bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) {
