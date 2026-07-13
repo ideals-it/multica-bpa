@@ -1,5 +1,18 @@
 # BPA fork changelog
 
+## 2026-07-13 — Native approval for agent-created In Review
+
+An agent moving an untemplated, agent-owned main ticket to `In Review` now
+starts the native Production approval contract automatically. The server stores
+one pending fingerprint for the ticket title and description, then records a
+matching human approval directly against that scope. An already approved,
+unchanged scope remains approved when an agent later updates its status, so a
+repeat approval comment cannot create an approval loop. Starting the Production
+template while a ticket is already `In Review` has the same behavior.
+
+Verified with focused live-PostgreSQL handler tests. No UI, board, predefined
+status, production service, IAM, secret, or remote deployment behavior changed.
+
 ## 2026-07-13 — Lead wake-up after concurrent specialist result
 
 Fixed a root-ticket race where a specialist could finish while the assigned

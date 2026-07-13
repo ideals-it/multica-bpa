@@ -3,7 +3,11 @@
 - `server/internal/bpa/workflow.go` parses BPA metadata, fingerprints the
   current plan, and fails closed when approval is absent or stale.
 - `server/internal/handler/bpa_workflow.go` starts the production template,
-  records an approval request, and permits only a human member to decide it.
+  records an approval request when it begins in `In Review`, preserves an
+  unchanged approved scope, and permits only a human member to decide it.
+- `server/internal/handler/issue.go` initializes the native Production
+  contract when an agent moves an otherwise untemplated agent-owned root to
+  `In Review`, preventing a prompt-only approval state.
 - `server/internal/service/task.go` checks the policy before direct assignment,
   mentions, and reruns enqueue an agent task.
 - `server/internal/handler/issue_child_done.go` wakes the root assignee only

@@ -35,7 +35,9 @@ Lead → specialist → Quality → Lead → human approval → specialist → Q
    mentions Quality on that same root; Quality checks the plan/evidence and
    returns one verdict to Lead.
 3. Only after Quality accepts, Lead moves the root to `In Review` and posts a
-   concise approval request for **[@Vitaliy Ustymenko](mention://member/7c237dcc-c29c-4c66-8ed0-bbae2339e58e)**:
+   concise approval request for **[@Vitaliy Ustymenko](mention://member/7c237dcc-c29c-4c66-8ed0-bbae2339e58e)**.
+   For an untemplated agent-owned root, that transition initializes the native
+   Production contract and records one pending ticket scope automatically:
 
 ```text
 **Дія:** <what will be done>
@@ -47,9 +49,12 @@ Lead → specialist → Quality → Lead → human approval → specialist → Q
 **Ризик:** <real residual risk>
 ```
 
-4. A matching human approval lets Lead move the root back to `In Progress` and
-   mention the execution specialist on the same root. The server still binds
-   approval to the current ticket scope and blocks an unapproved run.
+4. A matching human approval is recorded server-side for the current ticket
+   scope. Lead resumes the same root, moves it back to `In Progress` when
+   execution starts, and mentions the execution specialist. The server blocks
+   unapproved runs. Do not request approval again for an unchanged approved
+   title and description; a new approval is needed only after that scope
+   changes.
 5. The execution specialist and Quality post their result/postflight on the
    root. Lead closes it as `Done` or records the exact blocker.
 

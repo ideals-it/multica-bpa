@@ -25,6 +25,120 @@ func TestStartBPAWorkflowRejectsMainIssueWithoutAgentLead(t *testing.T) {
 	}
 }
 
+func TestAgentMovingRootToReviewStartsPendingProductionApproval(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	leadID := createHandlerTestAgent(t, "ReviewAutoProductionLead", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92135, "review auto-production approval")
+	taskID := createHandlerTestTaskForAgent(t, leadID)
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_review"})
+	req = withURLParam(req, "id", issueID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", leadID)
+	req.Header.Set("X-Task-ID", taskID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("agent transition to In Review: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Template != bpa.TemplateProduction || state.ApprovalStatus != bpa.ApprovalPending || state.WaitingFor != bpa.WaitingForHumanApproval || state.ScopeFingerprint == "" {
+		t.Fatalf("review workflow state = %#v, want pending production approval", state)
+	}
+}
+
+func TestStartProductionWorkflowOnInReviewStartsPendingApproval(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	leadID := createHandlerTestAgent(t, "ReviewStartedProductionLead", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92136, "start production workflow in review")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/bpa/template", StartBPAWorkflowRequest{Template: bpa.TemplateProduction})
+	req = withURLParam(req, "id", issueID)
+	testHandler.StartBPAWorkflow(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("start production workflow: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ApprovalStatus != bpa.ApprovalPending || state.WaitingFor != bpa.WaitingForHumanApproval || state.ScopeFingerprint == "" {
+		t.Fatalf("started review workflow state = %#v, want pending approval", state)
+	}
+}
+
+func TestAgentReviewTransitionKeepsApprovedUnchangedProductionScope(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	leadID := createHandlerTestAgent(t, "ReviewApprovedScopeLead", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92137, "keep approved production scope")
+	taskID := createHandlerTestTaskForAgent(t, leadID)
+
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := bpa.TicketScopeFingerprint(issue.Title, "")
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template":                   string(bpa.TemplateProduction),
+		"bpa.waiting_for":                string(bpa.WaitingForLead),
+		"bpa.scope_fingerprint":          scope,
+		"bpa.approval_status":            string(bpa.ApprovalApproved),
+		"bpa.approved_scope_fingerprint": scope,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_review"})
+	req = withURLParam(req, "id", issueID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", leadID)
+	req.Header.Set("X-Task-ID", taskID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("agent transition to In Review: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ApprovalStatus != bpa.ApprovalApproved || state.ApprovedScopeFingerprint != scope || state.WaitingFor == bpa.WaitingForHumanApproval {
+		t.Fatalf("approved unchanged scope must remain approved, got %#v", state)
+	}
+}
+
 func TestBPARootResolvesThroughNestedChildren(t *testing.T) {
 	ctx := context.Background()
 	rootID := createMetadataTestIssue(t, "nested BPA root")

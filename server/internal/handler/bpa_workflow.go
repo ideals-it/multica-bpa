@@ -69,6 +69,13 @@ func (h *Handler) StartBPAWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to start BPA workflow")
 		return
 	}
+	if req.Template == bpa.TemplateProduction && updated.Status == "in_review" {
+		updated, err = h.beginBPAHumanReview(r, updated)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to prepare BPA review")
+			return
+		}
+	}
 	h.writeBPAWorkflow(w, updated)
 }
 
@@ -118,6 +125,19 @@ func (h *Handler) beginBPAHumanReview(r *http.Request, issue db.Issue) (db.Issue
 		"bpa.approval_status":            string(bpa.ApprovalPending),
 		"bpa.waiting_for":                string(bpa.WaitingForHumanApproval),
 	})
+}
+
+func (h *Handler) shouldBeginBPAHumanReview(issue db.Issue) (bool, error) {
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil || state.Template != bpa.TemplateProduction || issue.ParentIssueID.Valid {
+		return false, err
+	}
+	description := ""
+	if issue.Description.Valid {
+		description = issue.Description.String
+	}
+	scope := bpa.TicketScopeFingerprint(issue.Title, description)
+	return state.ApprovalStatus != bpa.ApprovalApproved || state.ApprovedScopeFingerprint != scope, nil
 }
 
 // bpaRootHasOpenChildren enforces Lead fan-in on a BPA root. The generic

@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/bpa"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -2682,14 +2683,46 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	dueDateChanged := prevDueDate != resp.DueDate && (prevDueDate == nil) != (resp.DueDate == nil) ||
 		(prevDueDate != nil && resp.DueDate != nil && *prevDueDate != *resp.DueDate)
 
-	// A Production root entering In Review requests approval for the ticket's
-	// current scope. Editing that scope while it is under review starts a new
-	// approval cycle before any agent can receive an execution run.
-	if issue.Status == "in_review" && (statusChanged || titleChanged || descriptionChanged) {
-		if reviewedIssue, reviewErr := h.beginBPAHumanReview(r, issue); reviewErr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to prepare BPA review")
+	// An agent moving an untemplated root to In Review is requesting a concrete
+	// human decision. BPA reserves that agent-owned transition for production
+	// scope, so initialize the native production gate instead of leaving a
+	// prompt-only review that an approval comment cannot protect.
+	if issue.Status == "in_review" && statusChanged && actorType == "agent" && !issue.ParentIssueID.Valid &&
+		issue.AssigneeType.String == "agent" {
+		state, stateErr := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+		if stateErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to parse BPA workflow")
 			return
-		} else {
+		}
+		if !state.Enabled() {
+			if initialized, initErr := h.setBPAWorkflowValues(r, issue, map[string]any{
+				"bpa.template":    string(bpa.TemplateProduction),
+				"bpa.waiting_for": string(bpa.WaitingForLead),
+			}); initErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to start BPA production workflow")
+				return
+			} else {
+				issue = initialized
+				resp = issueToResponse(issue, prefix)
+			}
+		}
+	}
+
+	// A Production root entering In Review requests approval for the ticket's
+	// current scope. An already approved, unchanged scope stays approved: an
+	// agent status update must not create an approval loop.
+	if issue.Status == "in_review" && (statusChanged || titleChanged || descriptionChanged) {
+		shouldBeginReview, reviewCheckErr := h.shouldBeginBPAHumanReview(issue)
+		if reviewCheckErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to inspect BPA review")
+			return
+		}
+		if shouldBeginReview {
+			reviewedIssue, reviewErr := h.beginBPAHumanReview(r, issue)
+			if reviewErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to prepare BPA review")
+				return
+			}
 			issue = reviewedIssue
 			resp = issueToResponse(issue, prefix)
 		}
