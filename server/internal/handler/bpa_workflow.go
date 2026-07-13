@@ -44,7 +44,13 @@ func (h *Handler) StartBPAWorkflow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := requireUserID(w, r); !ok {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	actorType, _ := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	if actorType != "member" {
+		writeError(w, http.StatusForbidden, "only a human member can start a BPA workflow")
 		return
 	}
 	parentID := ""
@@ -67,25 +73,22 @@ func (h *Handler) StartBPAWorkflow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) setBPAWorkflowValues(r *http.Request, issue db.Issue, values map[string]any) (db.Issue, error) {
-	updated := issue
 	userID := requestUserID(r)
 	workspaceID := uuidToString(issue.WorkspaceID)
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	for key, value := range values {
-		raw, err := json.Marshal(value)
-		if err != nil {
-			return db.Issue{}, err
-		}
-		updated, err = h.Queries.SetIssueMetadataKey(r.Context(), db.SetIssueMetadataKeyParams{
-			ID: issue.ID, WorkspaceID: issue.WorkspaceID, Key: key, Value: raw,
-		})
-		if err != nil {
-			return db.Issue{}, err
-		}
-		h.publish(protocol.EventIssueMetadataChanged, workspaceID, actorType, actorID, map[string]any{
-			"issue_id": uuidToString(updated.ID), "metadata": parseIssueMetadata(updated.Metadata),
-		})
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return db.Issue{}, err
 	}
+	updated, err := h.Queries.SetIssueMetadataValues(r.Context(), db.SetIssueMetadataValuesParams{
+		ID: issue.ID, WorkspaceID: issue.WorkspaceID, Values: raw,
+	})
+	if err != nil {
+		return db.Issue{}, err
+	}
+	h.publish(protocol.EventIssueMetadataChanged, workspaceID, actorType, actorID, map[string]any{
+		"issue_id": uuidToString(updated.ID), "metadata": parseIssueMetadata(updated.Metadata),
+	})
 	h.queueBPAArchivist(r.Context(), updated, "workflow_changed")
 	return updated, nil
 }

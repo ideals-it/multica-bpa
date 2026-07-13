@@ -2229,6 +2229,21 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	// Determine creator identity: agent (via X-Agent-ID header) or member.
 	creatorType, actualCreatorID := h.resolveActor(r, creatorID, workspaceID)
+	if creatorType == "agent" && h.isBPAArchivistAgent(r.Context(), actualCreatorID) {
+		writeError(w, http.StatusForbidden, "the configured BPA Archivist is read-only")
+		return
+	}
+	if creatorType == "agent" && parentIssueID.Valid {
+		parent, err := h.Queries.GetIssue(r.Context(), parentIssueID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "parent issue not found")
+			return
+		}
+		if err := h.requireBPACoordination(r.Context(), parent, creatorType, actualCreatorID); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+	}
 
 	// Optional origin stamping (quick-create / autopilot). Only the
 	// allowed origin types are accepted; anything else is rejected so a
@@ -2426,6 +2441,28 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// Track which fields were explicitly present in JSON (even if null)
 	var rawFields map[string]json.RawMessage
 	json.Unmarshal(bodyBytes, &rawFields)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if actorType == "agent" && h.isBPAArchivistAgent(r.Context(), actorID) {
+		writeError(w, http.StatusForbidden, "the configured BPA Archivist is read-only")
+		return
+	}
+	coordinationMutation := rawFields["parent_issue_id"] != nil || rawFields["assignee_type"] != nil || rawFields["assignee_id"] != nil ||
+		(!prevIssue.ParentIssueID.Valid && req.Status != nil && (*req.Status == "done" || *req.Status == "cancelled"))
+	if err := h.requireBPAIssueWrite(r.Context(), prevIssue, actorType, actorID, coordinationMutation); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if rawFields["parent_issue_id"] != nil && req.ParentIssueID != nil {
+		newParentID, err := util.ParseUUID(*req.ParentIssueID)
+		if err == nil {
+			if newParent, loadErr := h.Queries.GetIssue(r.Context(), newParentID); loadErr == nil {
+				if authErr := h.requireBPACoordination(r.Context(), newParent, actorType, actorID); authErr != nil {
+					writeError(w, http.StatusForbidden, authErr.Error())
+					return
+				}
+			}
+		}
+	}
 
 	// Pre-fill nullable fields (bare sqlc.narg) with current values
 	params := db.UpdateIssueParams{
@@ -2635,9 +2672,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			resp = issueToResponse(issue, prefix)
 		}
 	}
-
-	// Determine actor identity: agent (via X-Agent-ID header) or member.
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, map[string]any{
 		"issue":               resp,
@@ -2888,6 +2922,16 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	userID := requestUserID(r)
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	if actorType == "agent" && h.isBPAArchivistAgent(r.Context(), actorID) {
+		writeError(w, http.StatusForbidden, "the configured BPA Archivist is read-only")
+		return
+	}
+	if err := h.requireBPACoordination(r.Context(), issue, actorType, actorID); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 
 	h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
 	// Fail any linked autopilot runs before delete (ON DELETE SET NULL clears issue_id).
@@ -2906,8 +2950,6 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.deleteS3Objects(r.Context(), attachmentURLs)
-	userID := requestUserID(r)
-	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	// Always emit the resolved UUID — frontend caches key by UUID, so an
 	// identifier-style payload ("MUL-123") would leave stale entries on
 	// other clients after an identifier-path delete.
@@ -2998,6 +3040,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if actorType == "agent" && h.isBPAArchivistAgent(r.Context(), actorID) {
+		writeError(w, http.StatusForbidden, "the configured BPA Archivist is read-only")
+		return
+	}
+	batchCoordinationMutation := rawUpdates["parent_issue_id"] != nil || rawUpdates["assignee_type"] != nil || rawUpdates["assignee_id"] != nil
 	updated := 0
 	// Children that transitioned into a terminal status this batch, collected so
 	// the parent/stage notification is evaluated once against the final state
@@ -3014,6 +3062,20 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			continue
+		}
+		coordinationMutation := batchCoordinationMutation || (!prevIssue.ParentIssueID.Valid && req.Updates.Status != nil && (*req.Updates.Status == "done" || *req.Updates.Status == "cancelled"))
+		if err := h.requireBPAIssueWrite(r.Context(), prevIssue, actorType, actorID, coordinationMutation); err != nil {
+			continue
+		}
+		if rawUpdates["parent_issue_id"] != nil && req.Updates.ParentIssueID != nil {
+			newParentID, parseErr := util.ParseUUID(*req.Updates.ParentIssueID)
+			if parseErr == nil {
+				if newParent, loadErr := h.Queries.GetIssue(r.Context(), newParentID); loadErr == nil {
+					if authErr := h.requireBPACoordination(r.Context(), newParent, actorType, actorID); authErr != nil {
+						continue
+					}
+				}
+			}
 		}
 
 		params := db.UpdateIssueParams{
@@ -3167,8 +3229,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 		resp := issueToResponse(issue, prefix)
-		actorType, actorID := h.resolveActor(r, userID, workspaceID)
-
 		assigneeChanged := (req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil) &&
 			(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 		statusChanged := req.Updates.Status != nil && prevIssue.Status != issue.Status

@@ -1236,7 +1236,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 
 	// Determine author identity: agent (via X-Agent-ID header) or member.
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
-	if authorType == "agent" && isConfiguredBPAArchivist(issue, authorID) {
+	if authorType == "agent" && (h.isBPAArchivistAgent(r.Context(), authorID) || h.isConfiguredBPAArchivist(r.Context(), issue, authorID)) {
 		writeError(w, http.StatusForbidden, "the configured BPA Archivist cannot create issue comments")
 		return
 	}

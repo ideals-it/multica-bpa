@@ -116,11 +116,17 @@ func TestHasCommitEvidenceAcceptsCommitOrExplicitNoChange(t *testing.T) {
 	if HasCommitEvidence(map[string]any{}) {
 		t.Fatal("empty metadata must not satisfy the commit gate")
 	}
-	if !HasCommitEvidence(map[string]any{"bpa.commit_sha": "abc123"}) {
+	if !HasCommitEvidence(map[string]any{"bpa.commit_sha": "abcdef1"}) {
 		t.Fatal("commit SHA must satisfy the commit gate")
 	}
 	if !HasCommitEvidence(map[string]any{"bpa.no_repo_changes": "read-only investigation"}) {
 		t.Fatal("explicit no-change reason must satisfy the commit gate")
+	}
+	if HasCommitEvidence(map[string]any{"bpa.commit_sha": "not-a-sha"}) {
+		t.Fatal("arbitrary commit text must not satisfy the commit gate")
+	}
+	if HasCommitEvidence(map[string]any{"bpa.no_repo_changes": "none"}) {
+		t.Fatal("empty no-change justification must not satisfy the commit gate")
 	}
 }
 

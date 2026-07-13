@@ -97,10 +97,9 @@ SELECT EXISTS (
     SELECT 1
     FROM autopilot_run
     WHERE autopilot_id = $1
-      AND (
-        (status = 'completed' AND completed_at >= $2::timestamptz AND completed_at < $3::timestamptz)
-        OR (status = 'running' AND triggered_at >= $2::timestamptz AND triggered_at < $3::timestamptz)
-      )
+      AND status IN ('running', 'completed')
+      AND planned_at >= $2::timestamptz
+      AND planned_at < $3::timestamptz
 ) AS has_active_or_completed_run
 `
 

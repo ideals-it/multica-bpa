@@ -326,6 +326,15 @@ UPDATE issue SET
 WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
 RETURNING *;
 
+-- name: SetIssueMetadataValues :one
+-- Atomically merges a server-owned group of metadata keys. BPA uses this for
+-- state transitions so a task can never observe a half-written approval.
+UPDATE issue SET
+    metadata = metadata || sqlc.arg('values')::jsonb,
+    updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+RETURNING *;
+
 -- name: DeleteIssueMetadataKey :one
 -- Atomically removes a single key from the issue's metadata JSONB.
 -- Deleting a missing key is a no-op (still returns the row).

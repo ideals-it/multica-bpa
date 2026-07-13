@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -169,13 +170,25 @@ func HasOpenChildren(statuses []string) bool {
 // HasCommitEvidence accepts either a local commit made by the delivery agent
 // or an explicit statement that its completed logical unit changed no repo.
 func HasCommitEvidence(metadata map[string]any) bool {
-	for _, key := range []string{"bpa.commit_sha", "bpa.no_repo_changes"} {
-		value, ok := metadata[key].(string)
-		if ok && strings.TrimSpace(value) != "" {
-			return true
-		}
+	if sha, ok := metadata["bpa.commit_sha"].(string); ok && validCommitSHA(strings.TrimSpace(sha)) {
+		return true
+	}
+	if reason, ok := metadata["bpa.no_repo_changes"].(string); ok && utf8.RuneCountInString(strings.TrimSpace(reason)) >= 12 {
+		return true
 	}
 	return false
+}
+
+func validCommitSHA(sha string) bool {
+	if len(sha) < 7 || len(sha) > 64 {
+		return false
+	}
+	for _, char := range sha {
+		if !(char >= '0' && char <= '9') && !(char >= 'a' && char <= 'f') && !(char >= 'A' && char <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // CanWriteArchivistMetadata grants one configured agent a deliberately tiny

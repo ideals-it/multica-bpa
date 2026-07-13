@@ -63,10 +63,25 @@ type TaskService struct {
 // CanEnqueueIssue is the one policy check shared by direct assignment and
 // mention dispatch. It fails closed for malformed BPA metadata so a damaged
 // production gate cannot accidentally become an allow decision.
-func (s *TaskService) CanEnqueueIssue(issue db.Issue) error {
+func (s *TaskService) CanEnqueueIssue(ctx context.Context, issue db.Issue, targetAgentID pgtype.UUID) error {
+	workflowIssue := issue
+	if issue.ParentIssueID.Valid {
+		// BPA state belongs to the main issue. Children intentionally carry
+		// only their own delivery metadata, so consulting the child alone
+		// would let a mention, reassignment, or rerun bypass the root's
+		// production approval gate.
+		if s.Queries == nil {
+			return bpa.ErrHumanApprovalRequired
+		}
+		root, err := s.Queries.GetIssue(ctx, issue.ParentIssueID)
+		if err != nil {
+			return fmt.Errorf("%w: load BPA main issue: %v", bpa.ErrHumanApprovalRequired, err)
+		}
+		workflowIssue = root
+	}
 	metadata := map[string]any{}
-	if len(issue.Metadata) > 0 {
-		if err := json.Unmarshal(issue.Metadata, &metadata); err != nil {
+	if len(workflowIssue.Metadata) > 0 {
+		if err := json.Unmarshal(workflowIssue.Metadata, &metadata); err != nil {
 			return fmt.Errorf("%w: invalid BPA metadata", bpa.ErrHumanApprovalRequired)
 		}
 	}
@@ -76,14 +91,35 @@ func (s *TaskService) CanEnqueueIssue(issue db.Issue) error {
 	}
 	// Before approval, only the root Team Lead coordination task may run to
 	// prepare the plan. Production children are execution work and are blocked.
-	if state.Template == bpa.TemplateProduction && !issue.ParentIssueID.Valid &&
+	if state.Template == bpa.TemplateProduction && !issue.ParentIssueID.Valid && issue.Status != "in_review" &&
 		state.ScopeFingerprint == "" && state.WaitingFor == bpa.WaitingForLead {
-		return nil
+		if s.isRootLead(ctx, issue, targetAgentID) {
+			return nil
+		}
+		return bpa.ErrHumanApprovalRequired
 	}
 	if decision := bpa.CanDispatch(state); !decision.Allowed {
 		return decision.Err
 	}
 	return nil
+}
+
+func (s *TaskService) isRootLead(ctx context.Context, issue db.Issue, targetAgentID pgtype.UUID) bool {
+	if !targetAgentID.Valid {
+		return false
+	}
+	switch issue.AssigneeType.String {
+	case "agent":
+		return issue.AssigneeID.Valid && issue.AssigneeID == targetAgentID
+	case "squad":
+		if s.Queries == nil || !issue.AssigneeID.Valid {
+			return false
+		}
+		squad, err := s.Queries.GetSquad(ctx, issue.AssigneeID)
+		return err == nil && squad.LeaderID == targetAgentID
+	default:
+		return false
+	}
 }
 
 // ComposioOverlayBuilder is the seam TaskService uses to build the per-task
@@ -741,7 +777,7 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 }
 
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string) (db.AgentTaskQueue, error) {
-	if err := s.CanEnqueueIssue(issue); err != nil {
+	if err := s.CanEnqueueIssue(ctx, issue, issue.AssigneeID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	if !issue.AssigneeID.Valid {
@@ -854,7 +890,7 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 }
 
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string) (db.AgentTaskQueue, error) {
-	if err := s.CanEnqueueIssue(issue); err != nil {
+	if err := s.CanEnqueueIssue(ctx, issue, agentID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
@@ -2494,10 +2530,6 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 	if err != nil {
 		return nil, fmt.Errorf("load issue: %w", err)
 	}
-	if err := s.CanEnqueueIssue(issue); err != nil {
-		return nil, err
-	}
-
 	// Determine the target agent for the rerun.
 	var (
 		agentID             pgtype.UUID
@@ -2551,6 +2583,9 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		default:
 			return nil, fmt.Errorf("issue is not assigned to an agent or squad")
 		}
+	}
+	if err := s.CanEnqueueIssue(ctx, issue, agentID); err != nil {
+		return nil, err
 	}
 
 	// Cancel only the target agent's active/queued tasks on this issue.

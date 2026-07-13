@@ -1,5 +1,28 @@
 # BPA fork changelog
 
+## 2026-07-13 — Review hardening for BPA dispatch and authority
+
+Closed the independent review findings without changing the UI, board, or
+predefined statuses:
+
+- every child dispatch now reads the BPA state from its main task, so reruns,
+  mentions, and assignment cannot bypass Production `In Review` approval;
+- before approval, only the actual root Team Lead may prepare a Production
+  plan; specialists cannot be woken through a root mention;
+- the `In Review` transition writes all approval-pending metadata atomically;
+- Team Lead ownership is enforced for BPA child creation, routing,
+  reassignment, reparenting, and root closure, including batch updates;
+- `AT Archivist` is read-only across issue creation, update, deletion, batch
+  updates, and comments;
+- commit evidence now requires a valid Git SHA, while no-change evidence needs
+  a substantive explanation;
+- Autopilot's once-per-day guard is based on the planned occurrence rather
+  than the time a run happens to finish.
+
+Verified with the complete Go backend test suite on the local test database.
+No production service, data, configuration, IAM, secret, UI, or deployment was
+changed.
+
 ## 2026-07-13 — Local runtime Autopilot recovery
 
 Added opt-in recovery for scheduled `run_only` Autopilots when a local runtime

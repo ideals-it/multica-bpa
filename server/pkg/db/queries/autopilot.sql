@@ -357,10 +357,9 @@ SELECT EXISTS (
     SELECT 1
     FROM autopilot_run
     WHERE autopilot_id = $1
-      AND (
-        (status = 'completed' AND completed_at >= sqlc.arg('window_start')::timestamptz AND completed_at < sqlc.arg('window_end')::timestamptz)
-        OR (status = 'running' AND triggered_at >= sqlc.arg('window_start')::timestamptz AND triggered_at < sqlc.arg('window_end')::timestamptz)
-      )
+      AND status IN ('running', 'completed')
+      AND planned_at >= sqlc.arg('window_start')::timestamptz
+      AND planned_at < sqlc.arg('window_end')::timestamptz
 ) AS has_active_or_completed_run;
 
 -- =====================
