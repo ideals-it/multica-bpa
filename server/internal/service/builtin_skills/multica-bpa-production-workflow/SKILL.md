@@ -30,7 +30,7 @@ Lead → specialist → Quality → Lead → human approval → specialist → Q
    specialist on the root. Preparation may investigate, test locally, prepare
    a reversible plan, or make a focused local commit. It never changes
    production. An action owner always uses a clickable agent mention, for
-   example `**[@AT Builder](mention://agent/<agent-id>)**`.
+   example `[@AT Builder](mention://agent/<agent-id>)`.
 2. The specialist posts one result on the root and mentions Team Lead. Lead
    mentions Quality on that same root; Quality checks the plan/evidence and
    returns one verdict to Lead.

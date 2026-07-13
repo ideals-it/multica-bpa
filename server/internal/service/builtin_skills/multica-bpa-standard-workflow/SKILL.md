@@ -35,14 +35,14 @@ owner.
 
 1. Lead writes one short plan on the root, moves it to `In Progress`, and
    names the specialist with a clickable action mention, for example
-   `**[@AT Builder](mention://agent/<builder-id>)**`.
+   `[@AT Builder](mention://agent/<builder-id>)`.
 2. The specialist works only on the root. It makes a focused local commit when
    repository files changed, then posts one final result on the root. The
    server automatically wakes the root Lead after the last specialist run, so
    a missing mention cannot strand the task. A clickable Lead mention remains
    useful only when the comment also asks a specific question.
 3. Lead reads that result and, on the same root, mentions
-   `**[@AT Quality](mention://agent/<quality-id>)**` for an independent check.
+   `[@AT Quality](mention://agent/<quality-id>)` for an independent check.
 4. Quality posts one verdict on the root and mentions Team Lead.
 5. Lead either closes the root as `Done`, sets a named `Blocked` state, or
    moves it to `In Review` when a human decision is genuinely required.

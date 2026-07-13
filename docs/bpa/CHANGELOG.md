@@ -1,5 +1,12 @@
 # BPA fork changelog
 
+## 2026-07-13 — Plain agent mentions
+
+Removed bold formatting around actionable agent mentions in the Standard,
+Investigation, and Production contracts. Agent names remain plain text or a
+plain clickable `mention://agent/...` link; bold is reserved for comment
+labels. The same rule was applied to the live BPA agents.
+
 ## 2026-07-13 — Reliable root handoff and local artifact links
 
 - A completed specialist run on a root ticket now queues its assigned Lead

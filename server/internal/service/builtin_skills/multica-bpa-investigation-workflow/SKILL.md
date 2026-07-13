@@ -15,7 +15,7 @@ Lead → Investigator → Quality → Lead
 
 Lead moves the root to `In Progress` and mentions the Investigator on the root
 with a clickable action mention such as
-`**[@AT Builder](mention://agent/<agent-id>)**`.
+`[@AT Builder](mention://agent/<agent-id>)`.
 The Investigator is read-only against logs, code, configuration, and run
 history. It posts one evidence report on the root. The server wakes Team Lead
 after the final specialist run; use a clickable Lead mention only for a
