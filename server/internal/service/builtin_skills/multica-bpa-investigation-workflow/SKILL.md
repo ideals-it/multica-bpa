@@ -37,6 +37,25 @@ answer is evidenced, or sets it `Blocked` with the exact missing data. If a fix
 is needed, Lead creates a separate Standard or Production root task; an
 investigation не створює implementation-child.
 
+## Root summary before Done
+
+After each material handoff, Lead posts a short plain-language progress update
+on the root before mentioning the next owner. Before `Done`, Lead writes this
+final root summary. Do not paste logs, commands, child comments, or a task
+transcript:
+
+```text
+**Що було не так:** <confirmed symptom or cause>
+
+**Що змінили:** <"нічого" for read-only investigation, or the recommended next step>
+
+**Що перевірили:** <concise evidence>
+
+**Результат:** <confirmed conclusion or insufficient data>
+
+**Ризик / наступне:** <remaining uncertainty and owner>
+```
+
 Child issues are optional only for independent evidence streams that need their
 own readable deliverable. Do not create one for the Investigator or Quality
 handoff.

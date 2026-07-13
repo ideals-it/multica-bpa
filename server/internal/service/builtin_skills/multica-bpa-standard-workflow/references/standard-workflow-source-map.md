@@ -10,6 +10,7 @@ Recheck these references after an upstream merge before changing the skill.
 | Direct assignment, mention, and rerun share BPA production gating | `server/internal/service/task.go` (`CanEnqueueIssue`) |
 | Queued work moves an inactive native ticket to `In Progress` while preserving review, done, and blocked states | `server/internal/service/task.go` (`markIssueInProgressAfterQueue`) |
 | Native issue updates preserve the existing board statuses | `server/internal/handler/issue.go` (`UpdateIssue`) |
+| A BPA main ticket cannot reach `Done` before its assigned Lead has posted the required plain-language final summary | `server/internal/handler/bpa_workflow.go` (`validateBPACompletion`) |
 
 The template deliberately uses native issue comments, task runs, and statuses.
 It adds no child stage, scheduler, event protocol, or custom board status for a

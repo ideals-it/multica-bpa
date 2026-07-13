@@ -53,6 +53,25 @@ Lead → specialist → Quality → Lead → human approval → specialist → Q
 5. The execution specialist and Quality post their result/postflight on the
    root. Lead closes it as `Done` or records the exact blocker.
 
+## Root summary before Done
+
+After each material handoff, Lead posts a short plain-language progress update
+on the root before mentioning the next owner. Before `Done`, Lead writes this
+final root summary. Do not paste logs, commands, child comments, or a task
+transcript:
+
+```text
+**Що було не так:** <user-visible cause>
+
+**Що змінили:** <plain-language change>
+
+**Що перевірили:** <concise evidence and postflight>
+
+**Результат:** <approved action outcome>
+
+**Ризик / наступне:** <remaining risk or "немає відомого">
+```
+
 Child issues are optional only for independent parallel deliverables. Do not
 create a child merely to transfer work between Lead, specialist, Quality, or
 GitHub Ops.

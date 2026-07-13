@@ -8,6 +8,9 @@
   mentions, and reruns enqueue an agent task.
 - `server/internal/handler/issue_child_done.go` wakes the root assignee only
   after every child in a stage finishes.
+- `server/internal/handler/bpa_workflow.go` (`validateBPACompletion`) requires
+  the assigned Lead's final plain-language summary before the main task can
+  reach `Done`.
 
 The skill deliberately does not use a scheduler, event protocol, or comments
 as a dispatch mechanism. Native child stages and the server-side approval gate

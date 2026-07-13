@@ -1,5 +1,26 @@
 # BPA fork changelog
 
+## 2026-07-13 — Lead-owned main-ticket summary
+
+Kept the existing UI, board columns, and statuses unchanged while making the
+main BPA ticket the readable source of truth:
+
+- after every material specialist or Quality handoff, **AT Team Lead** posts a
+  short plain-language progress update on the main ticket before routing the
+  next owner;
+- before `Done`, the assigned Lead must publish five separate paragraphs:
+  `Що було не так`, `Що змінили`, `Що перевірили`, `Результат`, and
+  `Ризик / наступне`;
+- the server rejects completion of a BPA main ticket until that Lead-authored
+  summary exists, regardless of whether the update uses the normal issue API,
+  batch update, or GitHub merge completion;
+- raw logs, commands, and child-ticket transcripts remain out of the main
+  summary.
+
+Verified by focused handler and built-in-skill regression tests. No UI, board
+column, predefined status, production service, IAM, secret, or deployment
+behavior was changed.
+
 ## 2026-07-13 — Single-ticket BPA execution and truthful board state
 
 Simplified the BPA templates without changing the UI, board columns, or

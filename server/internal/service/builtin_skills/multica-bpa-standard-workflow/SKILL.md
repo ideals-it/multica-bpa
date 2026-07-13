@@ -57,6 +57,25 @@ Every material comment uses separate Markdown paragraphs:
 **Наступне:** <bold owner and exact action>
 ```
 
+## Root summary before Done
+
+After each material specialist or Quality handoff, Lead posts one short
+plain-language progress update on this root before mentioning the next owner.
+Before `Done`, Lead posts this final root summary. Do not paste logs, commands,
+child comments, or a task transcript:
+
+```text
+**Що було не так:** <user-visible cause>
+
+**Що змінили:** <plain-language change or no-change conclusion>
+
+**Що перевірили:** <concise evidence>
+
+**Результат:** <current outcome>
+
+**Ризик / наступне:** <remaining risk or "немає відомого">
+```
+
 ## When child issues are optional
 
 Child issues are optional. Create one only when it has an independently useful

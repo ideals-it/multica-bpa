@@ -93,13 +93,13 @@ git commit -m "feat(bpa): validate lead root summaries"
 
 - Modify: `server/internal/handler/bpa_workflow.go:160-176`
 - Modify: `server/internal/handler/bpa_workflow_test.go`
-- Modify: `server/pkg/db/queries/comment.sql`
-- Regenerate: `server/pkg/db/generated/comment.sql.go`
 
 **Interfaces:**
 
 - Consumes: `Handler.validateBPACompletion`, called by `UpdateIssue`,
   `BatchUpdateIssues`, and GitHub merge completion.
+- Consumes: existing `Queries.ListCommentsForIssue(ctx, {IssueID, WorkspaceID,
+  Limit})`, which already scopes and orders comments safely.
 - Produces: `validateBPAFinalRootSummary(ctx, issue) error` after current
   commit-evidence and open-child checks.
 
@@ -120,23 +120,7 @@ Run: `cd server && go test ./internal/handler -run 'TestBPA.*FinalSummary' -coun
 
 Expected: the no-summary transition incorrectly succeeds.
 
-- [ ] **Step 3: Add an ordered sqlc comment query**
-
-Append this to `server/pkg/db/queries/comment.sql`:
-
-```sql
--- name: ListAllCommentsForIssue :many
-SELECT *
-FROM comment
-WHERE issue_id = $1
-ORDER BY created_at ASC, id ASC;
-```
-
-Run: `make sqlc`
-
-Expected: generated `Queries.ListAllCommentsForIssue(ctx, issueID)`.
-
-- [ ] **Step 4: Add the root-only completion guard**
+- [ ] **Step 3: Add the root-only completion guard**
 
 ```go
 func (h *Handler) validateBPAFinalRootSummary(ctx context.Context, issue db.Issue) error {
@@ -147,7 +131,9 @@ func (h *Handler) validateBPAFinalRootSummary(ctx context.Context, issue db.Issu
     if err != nil || !state.Enabled() {
         return err
     }
-    comments, err := h.Queries.ListAllCommentsForIssue(ctx, issue.ID)
+    comments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
+        IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Limit: 2000,
+    })
     if err != nil {
         return fmt.Errorf("load BPA root comments: %w", err)
     }
@@ -161,14 +147,14 @@ func (h *Handler) validateBPAFinalRootSummary(ctx context.Context, issue db.Issu
 Call it as the final statement of `validateBPACompletion` after the existing
 open-child guard.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [ ] **Step 4: Run focused tests and commit**
 
 Run: `cd server && go test ./internal/handler -run 'TestBPA.*(Close|Completion|FinalSummary)' -count=1`
 
 Expected: PASS, including existing commit-evidence and open-child checks.
 
 ```bash
-git add server/internal/handler/bpa_workflow.go server/internal/handler/bpa_workflow_test.go server/pkg/db/queries/comment.sql server/pkg/db/generated/comment.sql.go
+git add server/internal/handler/bpa_workflow.go server/internal/handler/bpa_workflow_test.go
 git commit -m "fix(bpa): require lead summary before root completion"
 ```
 
@@ -278,14 +264,3 @@ curl -fsS http://127.0.0.1:8080/health
 
 Expected: response contains `"status":"ok"`. Do not deploy the Multica fork
 remotely.
-
-- [ ] **Step 3: Commit only generated residue if any**
-
-```bash
-git status --short
-git add server/pkg/db/generated/comment.sql.go
-git commit -m "chore(bpa): regenerate summary guard queries"
-```
-
-Run this only if sqlc left the generated file unstaged. Preserve unrelated
-`.gitignore` and `.codebase-memory/` changes.

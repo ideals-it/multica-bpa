@@ -288,6 +288,7 @@ func TestBPAStandardWorkflowSkillTeachesSingleTicketHandoffs(t *testing.T) {
 			t.Errorf("BPA standard workflow skill missing %q", want)
 		}
 	}
+	assertBPAFinalRootSummaryHeadings(t, body)
 	for _, forbidden := range []string{"--stage 1 --status todo", "--stage 2 --status backlog", "Quality is a separate child issue"} {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("single-ticket standard workflow still requires %q", forbidden)
@@ -318,6 +319,7 @@ func TestBPAProductionWorkflowSkillTeachesApprovalBoundaries(t *testing.T) {
 			t.Errorf("BPA production workflow skill missing %q", want)
 		}
 	}
+	assertBPAFinalRootSummaryHeadings(t, body)
 	if strings.Contains(body, "normal staged children") {
 		t.Error("production workflow still requires staged children for handoffs")
 	}
@@ -335,6 +337,22 @@ func TestBPAInvestigationWorkflowIsEvidenceOnly(t *testing.T) {
 	for _, want := range []string{"Lead → Investigator → Quality → Lead", "one root issue", "mention://agent/", "read-only", "Гіпотези:", "не створює implementation-child"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("investigation workflow skill missing %q", want)
+		}
+	}
+	assertBPAFinalRootSummaryHeadings(t, body)
+}
+
+func assertBPAFinalRootSummaryHeadings(t *testing.T, body string) {
+	t.Helper()
+	for _, heading := range []string{
+		"**Що було не так:**",
+		"**Що змінили:**",
+		"**Що перевірили:**",
+		"**Результат:**",
+		"**Ризик / наступне:**",
+	} {
+		if !strings.Contains(body, heading) {
+			t.Errorf("BPA workflow skill missing final root heading %q", heading)
 		}
 	}
 }
