@@ -148,12 +148,8 @@ func (h *Handler) bpaChildHasCommitEvidence(ctx context.Context, issue db.Issue)
 	if !issue.ParentIssueID.Valid {
 		return true, nil
 	}
-	parent, err := h.Queries.GetIssue(ctx, issue.ParentIssueID)
-	if err != nil {
-		return false, err
-	}
-	state, err := bpa.ParseState(parseIssueMetadata(parent.Metadata))
-	if err != nil || !state.Enabled() {
+	_, enabled, err := h.bpaRoot(ctx, issue)
+	if err != nil || !enabled {
 		return true, err
 	}
 	return bpa.HasCommitEvidence(parseIssueMetadata(issue.Metadata)), nil
@@ -183,16 +179,13 @@ func (h *Handler) validateBPACompletion(ctx context.Context, issue db.Issue) err
 // The task reads live issue state, so an existing pending run already covers
 // later events and the native active-task unique index provides deduplication.
 func (h *Handler) queueBPAArchivist(ctx context.Context, issue db.Issue, event string) {
-	if issue.ParentIssueID.Valid {
-		parent, err := h.Queries.GetIssue(ctx, issue.ParentIssueID)
-		if err != nil {
-			return
-		}
-		issue = parent
+	issue, enabled, err := h.bpaRoot(ctx, issue)
+	if err != nil || !enabled {
+		return
 	}
 	metadata := parseIssueMetadata(issue.Metadata)
 	state, err := bpa.ParseState(metadata)
-	if err != nil || !state.Enabled() {
+	if err != nil {
 		return
 	}
 	issue, archivistID, ok := h.resolveBPAArchivist(ctx, issue, metadata)
@@ -264,12 +257,9 @@ func (h *Handler) queueBPAArchivistAfterTaskCompletion(ctx context.Context, task
 	if err != nil {
 		return
 	}
-	root := issue
-	if issue.ParentIssueID.Valid {
-		root, err = h.Queries.GetIssue(ctx, issue.ParentIssueID)
-		if err != nil {
-			return
-		}
+	root, enabled, err := h.bpaRoot(ctx, issue)
+	if err != nil || !enabled {
+		return
 	}
 	archivistID, _ := parseIssueMetadata(root.Metadata)["bpa.archivist_agent_id"].(string)
 	if archivistID != "" && archivistID == uuidToString(task.AgentID) {

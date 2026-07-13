@@ -24,6 +24,46 @@ func TestStartBPAWorkflowRejectsMainIssueWithoutAgentLead(t *testing.T) {
 	}
 }
 
+func TestBPARootResolvesThroughNestedChildren(t *testing.T) {
+	ctx := context.Background()
+	rootID := createMetadataTestIssue(t, "nested BPA root")
+	root, err := testHandler.Queries.GetIssue(ctx, parseUUID(rootID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.setBPAWorkflowValues(newRequest("POST", "/", nil), root, map[string]any{"bpa.template": "standard"}); err != nil {
+		t.Fatal(err)
+	}
+
+	createChild := func(title, parentID string) IssueResponse {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+			"title":           title,
+			"parent_issue_id": parentID,
+		})
+		testHandler.CreateIssue(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create child: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		var child IssueResponse
+		if err := json.NewDecoder(w.Body).Decode(&child); err != nil {
+			t.Fatal(err)
+		}
+		return child
+	}
+	child := createChild("nested BPA child", rootID)
+	grandchild := createChild("nested BPA grandchild", child.ID)
+	grandchildIssue, err := testHandler.Queries.GetIssue(ctx, parseUUID(grandchild.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedRoot, enabled, err := testHandler.bpaRoot(ctx, grandchildIssue)
+	if err != nil || !enabled || resolvedRoot.ID != root.ID {
+		t.Fatalf("nested BPA root resolution = root=%s enabled=%t err=%v", uuidToString(resolvedRoot.ID), enabled, err)
+	}
+}
+
 func TestApproveCommentApprovesCurrentTicketScope(t *testing.T) {
 	issueID := createMetadataTestIssue(t, "scope approval")
 	ctx := context.Background()
@@ -256,10 +296,8 @@ func TestQueueBPAArchivistDeduplicatesPendingRuns(t *testing.T) {
 	}
 	req := newRequest("POST", "/api/issues/"+issueID, nil)
 	issue, err = testHandler.setBPAWorkflowValues(req, issue, map[string]any{
-		"bpa.template":           "production",
+		"bpa.template":           "standard",
 		"bpa.archivist_agent_id": agentID,
-		"bpa.scope_fingerprint":  "sha256:pending-production-scope",
-		"bpa.approval_status":    "pending",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -283,6 +321,37 @@ func TestQueueBPAArchivistDeduplicatesPendingRuns(t *testing.T) {
 	metadata := parseIssueMetadata(updated.Metadata)
 	if metadata["bpa.knowledge_version"] != float64(1) || metadata["bpa.knowledge_event"] != "root_changed" {
 		t.Fatalf("knowledge metadata = %#v", metadata)
+	}
+}
+
+func TestQueueBPAArchivistWaitsForProductionApproval(t *testing.T) {
+	ctx := context.Background()
+	issueID := createMetadataTestIssue(t, "BPA Archivist approval gate")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var agentID string
+	if err := testPool.QueryRow(ctx, `SELECT id FROM agent WHERE workspace_id = $1 AND name = 'Handler Test Agent'`, testWorkspaceID).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest("POST", "/api/issues/"+issueID, nil), issue, map[string]any{
+		"bpa.template":           "production",
+		"bpa.archivist_agent_id": agentID,
+		"bpa.waiting_for":        "human_approval",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issue.ID) })
+
+	testHandler.queueBPAArchivist(ctx, issue, "root_changed")
+	var count int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issue.ID, agentID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("Archivist must wait for Production approval, got %d runs", count)
 	}
 }
 

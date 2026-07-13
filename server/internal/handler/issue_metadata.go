@@ -166,6 +166,10 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	if actorType == "agent" && (h.isBPAArchivistAgent(r.Context(), actorID) || h.isConfiguredBPAArchivist(r.Context(), issue, actorID)) && key != "bpa.archive_summary" && key != "bpa.archive_updated_at" {
+		writeError(w, http.StatusForbidden, "the configured BPA Archivist is read-only")
+		return
+	}
 	if strings.HasPrefix(key, "bpa.") {
 		switch key {
 		case "bpa.archivist_agent_id":
@@ -231,12 +235,8 @@ func (h *Handler) canAgentWriteBPAChildEvidence(r *http.Request, issue db.Issue,
 	if !issue.ParentIssueID.Valid {
 		return false
 	}
-	parent, err := h.Queries.GetIssue(r.Context(), issue.ParentIssueID)
-	if err != nil {
-		return false
-	}
-	state, err := bpa.ParseState(parseIssueMetadata(parent.Metadata))
-	if err != nil || !state.Enabled() {
+	_, enabled, err := h.bpaRoot(r.Context(), issue)
+	if err != nil || !enabled {
 		return false
 	}
 	if issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" && uuidToString(issue.AssigneeID) == agentID {
@@ -266,6 +266,11 @@ func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	if actorType == "agent" && (h.isBPAArchivistAgent(r.Context(), actorID) || h.isConfiguredBPAArchivist(r.Context(), issue, actorID)) {
+		writeError(w, http.StatusForbidden, "the configured BPA Archivist is read-only")
+		return
+	}
 	if strings.HasPrefix(key, "bpa.") {
 		writeError(w, http.StatusForbidden, "BPA metadata cannot be deleted through the generic API")
 		return
@@ -287,7 +292,6 @@ func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request)
 	}
 
 	workspaceID := uuidToString(updated.WorkspaceID)
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	metadata := parseIssueMetadata(updated.Metadata)
 	h.publish(protocol.EventIssueMetadataChanged, workspaceID, actorType, actorID, map[string]any{
 		"issue_id": uuidToString(updated.ID),

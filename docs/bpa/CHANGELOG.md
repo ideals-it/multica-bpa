@@ -19,6 +19,16 @@ predefined statuses:
 - Autopilot's once-per-day guard is based on the planned occurrence rather
   than the time a run happens to finish.
 
+Follow-up independent review found and closed three deeper paths:
+
+- Archivist now uses the normal Production dispatch gate, so its read-only run
+  cannot start while a ticket awaits human approval;
+- BPA root resolution traverses the complete issue ancestry with cycle and
+  depth guards, covering nested child tasks everywhere the policy is applied;
+- dispatch recomputes ticket scope from the current root title and description,
+  fail-closing if a write could not persist the matching approval metadata;
+- Archivist read-only enforcement also covers generic metadata writes/deletes.
+
 Verified with the complete Go backend test suite on the local test database.
 No production service, data, configuration, IAM, secret, UI, or deployment was
 changed.

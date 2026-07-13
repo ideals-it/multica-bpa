@@ -64,20 +64,9 @@ type TaskService struct {
 // mention dispatch. It fails closed for malformed BPA metadata so a damaged
 // production gate cannot accidentally become an allow decision.
 func (s *TaskService) CanEnqueueIssue(ctx context.Context, issue db.Issue, targetAgentID pgtype.UUID) error {
-	workflowIssue := issue
-	if issue.ParentIssueID.Valid {
-		// BPA state belongs to the main issue. Children intentionally carry
-		// only their own delivery metadata, so consulting the child alone
-		// would let a mention, reassignment, or rerun bypass the root's
-		// production approval gate.
-		if s.Queries == nil {
-			return bpa.ErrHumanApprovalRequired
-		}
-		root, err := s.Queries.GetIssue(ctx, issue.ParentIssueID)
-		if err != nil {
-			return fmt.Errorf("%w: load BPA main issue: %v", bpa.ErrHumanApprovalRequired, err)
-		}
-		workflowIssue = root
+	workflowIssue, err := s.bpaWorkflowRoot(ctx, issue)
+	if err != nil {
+		return fmt.Errorf("%w: %v", bpa.ErrHumanApprovalRequired, err)
 	}
 	metadata := map[string]any{}
 	if len(workflowIssue.Metadata) > 0 {
@@ -88,6 +77,15 @@ func (s *TaskService) CanEnqueueIssue(ctx context.Context, issue db.Issue, targe
 	state, err := bpa.ParseState(metadata)
 	if err != nil {
 		return fmt.Errorf("%w: %v", bpa.ErrHumanApprovalRequired, err)
+	}
+	if state.Template == bpa.TemplateProduction {
+		description := ""
+		if workflowIssue.Description.Valid {
+			description = workflowIssue.Description.String
+		}
+		if state.ScopeFingerprint != "" && state.ScopeFingerprint != bpa.TicketScopeFingerprint(workflowIssue.Title, description) {
+			return bpa.ErrHumanApprovalRequired
+		}
 	}
 	// Before approval, only the root Team Lead coordination task may run to
 	// prepare the plan. Production children are execution work and are blocked.
@@ -102,6 +100,33 @@ func (s *TaskService) CanEnqueueIssue(ctx context.Context, issue db.Issue, targe
 		return decision.Err
 	}
 	return nil
+}
+
+const maxBPAAncestorDepth = 32
+
+func (s *TaskService) bpaWorkflowRoot(ctx context.Context, issue db.Issue) (db.Issue, error) {
+	workflowIssue := issue
+	seen := map[string]struct{}{util.UUIDToString(issue.ID): {}}
+	for depth := 0; workflowIssue.ParentIssueID.Valid; depth++ {
+		// BPA state belongs to the main issue. Children intentionally carry
+		// only their own delivery metadata, so consulting an immediate child
+		// would let a mention, reassignment, or rerun bypass the root's
+		// production approval gate.
+		if depth >= maxBPAAncestorDepth || s.Queries == nil {
+			return db.Issue{}, fmt.Errorf("BPA main issue cannot be resolved")
+		}
+		parentID := util.UUIDToString(workflowIssue.ParentIssueID)
+		if _, duplicate := seen[parentID]; duplicate {
+			return db.Issue{}, fmt.Errorf("BPA issue hierarchy contains a cycle")
+		}
+		seen[parentID] = struct{}{}
+		parent, err := s.Queries.GetIssue(ctx, workflowIssue.ParentIssueID)
+		if err != nil {
+			return db.Issue{}, fmt.Errorf("load BPA main issue: %w", err)
+		}
+		workflowIssue = parent
+	}
+	return workflowIssue, nil
 }
 
 func (s *TaskService) isRootLead(ctx context.Context, issue db.Issue, targetAgentID pgtype.UUID) bool {
@@ -847,14 +872,11 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, pgtype.UUID{}, false, "")
 }
 
-// EnqueueTaskForBPAArchivist is a narrow read-only exception to the BPA
-// production dispatch gate. It clears only workflow metadata for the enqueue
-// policy check; the task still targets the real issue and all runtime, agent,
-// concurrency, and database dedup guards remain active.
+// EnqueueTaskForBPAArchivist keeps the normal BPA dispatch gate intact. The
+// Archivist is read-only, but it is still an agent run and must never bypass a
+// Production ticket's native human approval.
 func (s *TaskService) EnqueueTaskForBPAArchivist(ctx context.Context, issue db.Issue, agentID pgtype.UUID) (db.AgentTaskQueue, error) {
-	readOnlyIssue := issue
-	readOnlyIssue.Metadata = nil
-	return s.enqueueMentionTask(ctx, readOnlyIssue, agentID, pgtype.UUID{}, false, pgtype.UUID{}, false, "")
+	return s.enqueueMentionTask(ctx, issue, agentID, pgtype.UUID{}, false, pgtype.UUID{}, false, "")
 }
 
 // EnqueueTaskForThreadParent creates a queued task for the agent who authored

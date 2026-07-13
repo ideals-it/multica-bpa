@@ -25,15 +25,31 @@ func TestCanEnqueueIssueRejectsUnapprovedProductionAction(t *testing.T) {
 
 func TestCanEnqueueIssueAllowsApprovedProductionTicketScope(t *testing.T) {
 	service := &TaskService{}
-	issue := db.Issue{Metadata: []byte(`{
+	scope := bpa.TicketScopeFingerprint("approved production work", "approved scope")
+	issue := db.Issue{Title: "approved production work", Description: pgtype.Text{String: "approved scope", Valid: true}, Metadata: []byte(`{
 		"bpa.template":"production",
-		"bpa.scope_fingerprint":"scope-a",
-		"bpa.approved_scope_fingerprint":"scope-a",
+		"bpa.scope_fingerprint":"` + scope + `",
+		"bpa.approved_scope_fingerprint":"` + scope + `",
 		"bpa.approval_status":"approved"
 	}`), ID: pgtype.UUID{Valid: true}}
 
 	if err := service.CanEnqueueIssue(context.Background(), issue, pgtype.UUID{}); err != nil {
 		t.Fatalf("expected allowed dispatch, got %v", err)
+	}
+}
+
+func TestCanEnqueueIssueRejectsApprovalForStaleTicketScope(t *testing.T) {
+	service := &TaskService{}
+	oldScope := bpa.TicketScopeFingerprint("old title", "scope")
+	issue := db.Issue{Title: "changed title", Description: pgtype.Text{String: "scope", Valid: true}, Metadata: []byte(`{
+		"bpa.template":"production",
+		"bpa.scope_fingerprint":"` + oldScope + `",
+		"bpa.approved_scope_fingerprint":"` + oldScope + `",
+		"bpa.approval_status":"approved"
+	}`)}
+
+	if err := service.CanEnqueueIssue(context.Background(), issue, pgtype.UUID{}); !errors.Is(err, bpa.ErrHumanApprovalRequired) {
+		t.Fatalf("changed ticket scope must invalidate approval, got %v", err)
 	}
 }
 
