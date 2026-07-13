@@ -92,18 +92,19 @@ func (q *Queries) ArchiveAutopilot(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
-const autopilotHasCompletedRunInUTCWindow = `-- name: AutopilotHasCompletedRunInUTCWindow :one
+const autopilotHasActiveOrCompletedRunInUTCWindow = `-- name: AutopilotHasActiveOrCompletedRunInUTCWindow :one
 SELECT EXISTS (
     SELECT 1
     FROM autopilot_run
     WHERE autopilot_id = $1
-      AND status = 'completed'
-      AND completed_at >= $2::timestamptz
-      AND completed_at < $3::timestamptz
-) AS has_completed_run
+      AND (
+        (status = 'completed' AND completed_at >= $2::timestamptz AND completed_at < $3::timestamptz)
+        OR (status = 'running' AND triggered_at >= $2::timestamptz AND triggered_at < $3::timestamptz)
+      )
+) AS has_active_or_completed_run
 `
 
-type AutopilotHasCompletedRunInUTCWindowParams struct {
+type AutopilotHasActiveOrCompletedRunInUTCWindowParams struct {
 	AutopilotID pgtype.UUID        `json:"autopilot_id"`
 	WindowStart pgtype.Timestamptz `json:"window_start"`
 	WindowEnd   pgtype.Timestamptz `json:"window_end"`
@@ -111,11 +112,11 @@ type AutopilotHasCompletedRunInUTCWindowParams struct {
 
 // The caller supplies UTC day boundaries [start, end), avoiding session
 // timezone ambiguity when enforcing a once-per-day occurrence policy.
-func (q *Queries) AutopilotHasCompletedRunInUTCWindow(ctx context.Context, arg AutopilotHasCompletedRunInUTCWindowParams) (bool, error) {
-	row := q.db.QueryRow(ctx, autopilotHasCompletedRunInUTCWindow, arg.AutopilotID, arg.WindowStart, arg.WindowEnd)
-	var has_completed_run bool
-	err := row.Scan(&has_completed_run)
-	return has_completed_run, err
+func (q *Queries) AutopilotHasActiveOrCompletedRunInUTCWindow(ctx context.Context, arg AutopilotHasActiveOrCompletedRunInUTCWindowParams) (bool, error) {
+	row := q.db.QueryRow(ctx, autopilotHasActiveOrCompletedRunInUTCWindow, arg.AutopilotID, arg.WindowStart, arg.WindowEnd)
+	var has_active_or_completed_run bool
+	err := row.Scan(&has_active_or_completed_run)
+	return has_active_or_completed_run, err
 }
 
 const claimDueAutopilotRunForRuntimeRetry = `-- name: ClaimDueAutopilotRunForRuntimeRetry :one

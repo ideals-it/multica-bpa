@@ -383,8 +383,15 @@ func (s *AutopilotService) recoverOneDeferredRuntimeRun(ctx context.Context, run
 	if err != nil {
 		return false, fmt.Errorf("load deferred trigger: %w", err)
 	}
+	if ap.Status != "active" || !trigger.Enabled || trigger.Kind != "schedule" {
+		_, err = qtx.UpdateAutopilotRunSkipped(ctx, db.UpdateAutopilotRunSkippedParams{ID: run.ID, FailureReason: pgtype.Text{String: "autopilot or schedule trigger is no longer active", Valid: true}})
+		if err != nil {
+			return false, fmt.Errorf("skip inactive runtime retry: %w", err)
+		}
+		return true, tx.Commit(ctx)
+	}
 	start, end := triggerLocalDayWindow(run.PlannedAt.Time, trigger.Timezone.String)
-	alreadyCompleted, err := qtx.AutopilotHasCompletedRunInUTCWindow(ctx, db.AutopilotHasCompletedRunInUTCWindowParams{AutopilotID: ap.ID, WindowStart: pgtype.Timestamptz{Time: start, Valid: true}, WindowEnd: pgtype.Timestamptz{Time: end, Valid: true}})
+	alreadyCompleted, err := qtx.AutopilotHasActiveOrCompletedRunInUTCWindow(ctx, db.AutopilotHasActiveOrCompletedRunInUTCWindowParams{AutopilotID: ap.ID, WindowStart: pgtype.Timestamptz{Time: start, Valid: true}, WindowEnd: pgtype.Timestamptz{Time: end, Valid: true}})
 	if err != nil {
 		return false, fmt.Errorf("check runtime retry day limit: %w", err)
 	}

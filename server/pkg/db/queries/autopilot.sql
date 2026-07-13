@@ -343,17 +343,18 @@ WHERE id = $1
   AND status = 'pending'
 RETURNING *;
 
--- name: AutopilotHasCompletedRunInUTCWindow :one
+-- name: AutopilotHasActiveOrCompletedRunInUTCWindow :one
 -- The caller supplies UTC day boundaries [start, end), avoiding session
 -- timezone ambiguity when enforcing a once-per-day occurrence policy.
 SELECT EXISTS (
     SELECT 1
     FROM autopilot_run
     WHERE autopilot_id = $1
-      AND status = 'completed'
-      AND completed_at >= sqlc.arg('window_start')::timestamptz
-      AND completed_at < sqlc.arg('window_end')::timestamptz
-) AS has_completed_run;
+      AND (
+        (status = 'completed' AND completed_at >= sqlc.arg('window_start')::timestamptz AND completed_at < sqlc.arg('window_end')::timestamptz)
+        OR (status = 'running' AND triggered_at >= sqlc.arg('window_start')::timestamptz AND triggered_at < sqlc.arg('window_end')::timestamptz)
+      )
+) AS has_active_or_completed_run;
 
 -- =====================
 -- Scheduler Queries
