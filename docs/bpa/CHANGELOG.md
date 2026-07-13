@@ -13,6 +13,10 @@ template while a ticket is already `In Review` has the same behavior.
 Verified with focused live-PostgreSQL handler tests. No UI, board, predefined
 status, production service, IAM, secret, or remote deployment behavior changed.
 
+Pending Production review can no longer be moved manually to another status:
+the ticket remains visibly `In Review` until a member writes the explicit
+approval comment `Погоджую` or `Погоджено`.
+
 ## 2026-07-13 — Lead wake-up after concurrent specialist result
 
 Fixed a root-ticket race where a specialist could finish while the assigned

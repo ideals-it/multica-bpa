@@ -54,7 +54,8 @@ Lead → specialist → Quality → Lead → human approval → specialist → Q
    execution starts, and mentions the execution specialist. The server blocks
    unapproved runs. Do not request approval again for an unchanged approved
    title and description; a new approval is needed only after that scope
-   changes.
+   changes. Ask Vitaliy to comment exactly `Погоджую` or `Погоджено`; an agent
+   mention or manually moving the card is not approval.
 5. The execution specialist and Quality post their result/postflight on the
    root. Lead closes it as `Done` or records the exact blocker.
 

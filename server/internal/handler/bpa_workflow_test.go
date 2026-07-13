@@ -139,6 +139,38 @@ func TestAgentReviewTransitionKeepsApprovedUnchangedProductionScope(t *testing.T
 	}
 }
 
+func TestPendingProductionReviewCannotLeaveReviewBeforeApproval(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	leadID := createHandlerTestAgent(t, "PendingReviewLead", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92138, "pending production review")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template":          string(bpa.TemplateProduction),
+		"bpa.waiting_for":       string(bpa.WaitingForHumanApproval),
+		"bpa.scope_fingerprint": bpa.TicketScopeFingerprint(issue.Title, ""),
+		"bpa.approval_status":   string(bpa.ApprovalPending),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_progress"})
+	req = withURLParam(req, "id", issueID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("leave pending review: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestBPARootResolvesThroughNestedChildren(t *testing.T) {
 	ctx := context.Background()
 	rootID := createMetadataTestIssue(t, "nested BPA root")

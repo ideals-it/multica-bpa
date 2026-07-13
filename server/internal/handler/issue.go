@@ -2649,6 +2649,20 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A Production root stays visibly In Review until a member approval comment
+	// records the current scope. Moving the card manually must not imply an
+	// approval or leave it In Progress while dispatch remains blocked.
+	if req.Status != nil && prevIssue.Status == "in_review" && *req.Status != "in_review" && !prevIssue.ParentIssueID.Valid {
+		state, stateErr := bpa.ParseState(parseIssueMetadata(prevIssue.Metadata))
+		if stateErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to parse BPA workflow")
+			return
+		}
+		if state.Template == bpa.TemplateProduction && state.ApprovalStatus == bpa.ApprovalPending {
+			writeError(w, http.StatusConflict, "a human approval comment is required before leaving In Review")
+			return
+		}
+	}
 
 	issue, err := h.Queries.UpdateIssue(r.Context(), params)
 	if err != nil {
