@@ -92,30 +92,95 @@ func (q *Queries) ArchiveAutopilot(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const autopilotHasCompletedRunInUTCWindow = `-- name: AutopilotHasCompletedRunInUTCWindow :one
+SELECT EXISTS (
+    SELECT 1
+    FROM autopilot_run
+    WHERE autopilot_id = $1
+      AND status = 'completed'
+      AND completed_at >= $2::timestamptz
+      AND completed_at < $3::timestamptz
+) AS has_completed_run
+`
+
+type AutopilotHasCompletedRunInUTCWindowParams struct {
+	AutopilotID pgtype.UUID        `json:"autopilot_id"`
+	WindowStart pgtype.Timestamptz `json:"window_start"`
+	WindowEnd   pgtype.Timestamptz `json:"window_end"`
+}
+
+// The caller supplies UTC day boundaries [start, end), avoiding session
+// timezone ambiguity when enforcing a once-per-day occurrence policy.
+func (q *Queries) AutopilotHasCompletedRunInUTCWindow(ctx context.Context, arg AutopilotHasCompletedRunInUTCWindowParams) (bool, error) {
+	row := q.db.QueryRow(ctx, autopilotHasCompletedRunInUTCWindow, arg.AutopilotID, arg.WindowStart, arg.WindowEnd)
+	var has_completed_run bool
+	err := row.Scan(&has_completed_run)
+	return has_completed_run, err
+}
+
+const claimDueAutopilotRunForRuntimeRetry = `-- name: ClaimDueAutopilotRunForRuntimeRetry :one
+SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason FROM autopilot_run
+WHERE status = 'pending'
+  AND runtime_retry_after IS NOT NULL
+  AND runtime_retry_after <= now()
+ORDER BY runtime_retry_after ASC, id ASC
+LIMIT 1
+FOR UPDATE SKIP LOCKED
+`
+
+// Must be called inside a transaction; SKIP LOCKED lets retry workers make
+// progress independently without double-dispatching the same occurrence.
+func (q *Queries) ClaimDueAutopilotRunForRuntimeRetry(ctx context.Context) (AutopilotRun, error) {
+	row := q.db.QueryRow(ctx, claimDueAutopilotRunForRuntimeRetry)
+	var i AutopilotRun
+	err := row.Scan(
+		&i.ID,
+		&i.AutopilotID,
+		&i.TriggerID,
+		&i.Source,
+		&i.Status,
+		&i.IssueID,
+		&i.TaskID,
+		&i.TriggeredAt,
+		&i.CompletedAt,
+		&i.FailureReason,
+		&i.TriggerPayload,
+		&i.Result,
+		&i.CreatedAt,
+		&i.SquadID,
+		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
+	)
+	return i, err
+}
+
 const createAutopilot = `-- name: CreateAutopilot :one
 INSERT INTO autopilot (
     workspace_id, title, description, assignee_type, assignee_id,
     status, execution_mode, issue_title_template, project_id,
-    created_by_type, created_by_id
+    created_by_type, created_by_id, retry_on_runtime_unavailable
 ) VALUES (
-    $1, $2, $9, $3, $4,
-    $5, $6, $10, $11,
-    $7, $8
-) RETURNING id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id
+    $1, $2, $10, $3, $4,
+    $5, $6, $11, $12,
+    $7, $8, $9
+) RETURNING id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, retry_on_runtime_unavailable
 `
 
 type CreateAutopilotParams struct {
-	WorkspaceID        pgtype.UUID `json:"workspace_id"`
-	Title              string      `json:"title"`
-	AssigneeType       string      `json:"assignee_type"`
-	AssigneeID         pgtype.UUID `json:"assignee_id"`
-	Status             string      `json:"status"`
-	ExecutionMode      string      `json:"execution_mode"`
-	CreatedByType      string      `json:"created_by_type"`
-	CreatedByID        pgtype.UUID `json:"created_by_id"`
-	Description        pgtype.Text `json:"description"`
-	IssueTitleTemplate pgtype.Text `json:"issue_title_template"`
-	ProjectID          pgtype.UUID `json:"project_id"`
+	WorkspaceID               pgtype.UUID `json:"workspace_id"`
+	Title                     string      `json:"title"`
+	AssigneeType              string      `json:"assignee_type"`
+	AssigneeID                pgtype.UUID `json:"assignee_id"`
+	Status                    string      `json:"status"`
+	ExecutionMode             string      `json:"execution_mode"`
+	CreatedByType             string      `json:"created_by_type"`
+	CreatedByID               pgtype.UUID `json:"created_by_id"`
+	RetryOnRuntimeUnavailable bool        `json:"retry_on_runtime_unavailable"`
+	Description               pgtype.Text `json:"description"`
+	IssueTitleTemplate        pgtype.Text `json:"issue_title_template"`
+	ProjectID                 pgtype.UUID `json:"project_id"`
 }
 
 func (q *Queries) CreateAutopilot(ctx context.Context, arg CreateAutopilotParams) (Autopilot, error) {
@@ -128,6 +193,7 @@ func (q *Queries) CreateAutopilot(ctx context.Context, arg CreateAutopilotParams
 		arg.ExecutionMode,
 		arg.CreatedByType,
 		arg.CreatedByID,
+		arg.RetryOnRuntimeUnavailable,
 		arg.Description,
 		arg.IssueTitleTemplate,
 		arg.ProjectID,
@@ -149,6 +215,7 @@ func (q *Queries) CreateAutopilot(ctx context.Context, arg CreateAutopilotParams
 		&i.UpdatedAt,
 		&i.AssigneeType,
 		&i.ProjectID,
+		&i.RetryOnRuntimeUnavailable,
 	)
 	return i, err
 }
@@ -160,7 +227,7 @@ INSERT INTO autopilot_run (
 ) VALUES (
     $1, $4, $2, $3, $5,
     $6, $7
-) RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at
+) RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason
 `
 
 type CreateAutopilotRunParams struct {
@@ -214,6 +281,9 @@ func (q *Queries) CreateAutopilotRun(ctx context.Context, arg CreateAutopilotRun
 		&i.CreatedAt,
 		&i.SquadID,
 		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
 	)
 	return i, err
 }
@@ -347,6 +417,56 @@ func (q *Queries) CreateAutopilotTrigger(ctx context.Context, arg CreateAutopilo
 	return i, err
 }
 
+const deferAutopilotRunForRuntimeRetry = `-- name: DeferAutopilotRunForRuntimeRetry :one
+UPDATE autopilot_run
+SET status = 'pending',
+    completed_at = NULL,
+    runtime_retry_attempt = $2,
+    runtime_retry_after = $3,
+    runtime_retry_reason = $4
+WHERE id = $1
+RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason
+`
+
+type DeferAutopilotRunForRuntimeRetryParams struct {
+	ID                  pgtype.UUID        `json:"id"`
+	RuntimeRetryAttempt int32              `json:"runtime_retry_attempt"`
+	RuntimeRetryAfter   pgtype.Timestamptz `json:"runtime_retry_after"`
+	RuntimeRetryReason  pgtype.Text        `json:"runtime_retry_reason"`
+}
+
+// Converts a runtime-unavailable occurrence into a deferred pending run.
+func (q *Queries) DeferAutopilotRunForRuntimeRetry(ctx context.Context, arg DeferAutopilotRunForRuntimeRetryParams) (AutopilotRun, error) {
+	row := q.db.QueryRow(ctx, deferAutopilotRunForRuntimeRetry,
+		arg.ID,
+		arg.RuntimeRetryAttempt,
+		arg.RuntimeRetryAfter,
+		arg.RuntimeRetryReason,
+	)
+	var i AutopilotRun
+	err := row.Scan(
+		&i.ID,
+		&i.AutopilotID,
+		&i.TriggerID,
+		&i.Source,
+		&i.Status,
+		&i.IssueID,
+		&i.TaskID,
+		&i.TriggeredAt,
+		&i.CompletedAt,
+		&i.FailureReason,
+		&i.TriggerPayload,
+		&i.Result,
+		&i.CreatedAt,
+		&i.SquadID,
+		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
+	)
+	return i, err
+}
+
 const deleteAutopilotCollaborator = `-- name: DeleteAutopilotCollaborator :exec
 DELETE FROM autopilot_collaborator
 WHERE autopilot_id = $1 AND user_type = $2 AND user_id = $3
@@ -409,7 +529,7 @@ func (q *Queries) FailAutopilotRunsByIssue(ctx context.Context, issueID pgtype.U
 }
 
 const getAutopilot = `-- name: GetAutopilot :one
-SELECT id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id FROM autopilot
+SELECT id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, retry_on_runtime_unavailable FROM autopilot
 WHERE id = $1
 `
 
@@ -432,12 +552,13 @@ func (q *Queries) GetAutopilot(ctx context.Context, id pgtype.UUID) (Autopilot, 
 		&i.UpdatedAt,
 		&i.AssigneeType,
 		&i.ProjectID,
+		&i.RetryOnRuntimeUnavailable,
 	)
 	return i, err
 }
 
 const getAutopilotInWorkspace = `-- name: GetAutopilotInWorkspace :one
-SELECT id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id FROM autopilot
+SELECT id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, retry_on_runtime_unavailable FROM autopilot
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -465,12 +586,13 @@ func (q *Queries) GetAutopilotInWorkspace(ctx context.Context, arg GetAutopilotI
 		&i.UpdatedAt,
 		&i.AssigneeType,
 		&i.ProjectID,
+		&i.RetryOnRuntimeUnavailable,
 	)
 	return i, err
 }
 
 const getAutopilotRun = `-- name: GetAutopilotRun :one
-SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at FROM autopilot_run
+SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason FROM autopilot_run
 WHERE id = $1
 `
 
@@ -493,13 +615,16 @@ func (q *Queries) GetAutopilotRun(ctx context.Context, id pgtype.UUID) (Autopilo
 		&i.CreatedAt,
 		&i.SquadID,
 		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
 	)
 	return i, err
 }
 
 const getAutopilotRunByIssue = `-- name: GetAutopilotRunByIssue :one
 
-SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at FROM autopilot_run
+SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason FROM autopilot_run
 WHERE issue_id = $1 AND status IN ('issue_created', 'running')
 LIMIT 1
 `
@@ -526,12 +651,15 @@ func (q *Queries) GetAutopilotRunByIssue(ctx context.Context, issueID pgtype.UUI
 		&i.CreatedAt,
 		&i.SquadID,
 		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
 	)
 	return i, err
 }
 
 const getAutopilotRunByTriggerAndPlanned = `-- name: GetAutopilotRunByTriggerAndPlanned :one
-SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at FROM autopilot_run
+SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason FROM autopilot_run
 WHERE trigger_id = $1
   AND planned_at = $2
 LIMIT 1
@@ -569,6 +697,9 @@ func (q *Queries) GetAutopilotRunByTriggerAndPlanned(ctx context.Context, arg Ge
 		&i.CreatedAt,
 		&i.SquadID,
 		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
 	)
 	return i, err
 }
@@ -740,7 +871,7 @@ func (q *Queries) ListAutopilotIDsForCollaborator(ctx context.Context, userID pg
 }
 
 const listAutopilotRuns = `-- name: ListAutopilotRuns :many
-SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at FROM autopilot_run
+SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason FROM autopilot_run
 WHERE autopilot_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -777,6 +908,9 @@ func (q *Queries) ListAutopilotRuns(ctx context.Context, arg ListAutopilotRunsPa
 			&i.CreatedAt,
 			&i.SquadID,
 			&i.PlannedAt,
+			&i.RuntimeRetryAttempt,
+			&i.RuntimeRetryAfter,
+			&i.RuntimeRetryReason,
 		); err != nil {
 			return nil, err
 		}
@@ -873,7 +1007,7 @@ func (q *Queries) ListAutopilotTriggers(ctx context.Context, autopilotID pgtype.
 const listAutopilots = `-- name: ListAutopilots :many
 
 SELECT
-  a.id, a.workspace_id, a.title, a.description, a.assignee_id, a.status, a.execution_mode, a.issue_title_template, a.created_by_type, a.created_by_id, a.last_run_at, a.created_at, a.updated_at, a.assignee_type, a.project_id,
+  a.id, a.workspace_id, a.title, a.description, a.assignee_id, a.status, a.execution_mode, a.issue_title_template, a.created_by_type, a.created_by_id, a.last_run_at, a.created_at, a.updated_at, a.assignee_type, a.project_id, a.retry_on_runtime_unavailable,
   (
     SELECT array_agg(DISTINCT t.kind ORDER BY t.kind)
     FROM autopilot_trigger t
@@ -946,6 +1080,7 @@ func (q *Queries) ListAutopilots(ctx context.Context, arg ListAutopilotsParams) 
 			&i.Autopilot.UpdatedAt,
 			&i.Autopilot.AssigneeType,
 			&i.Autopilot.ProjectID,
+			&i.Autopilot.RetryOnRuntimeUnavailable,
 			&i.TriggerKinds,
 			&i.NextRunAt,
 			&i.LastRunStatus,
@@ -1054,6 +1189,56 @@ WHERE id = $1
 func (q *Queries) RecoverPartialAutopilotRun(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, recoverPartialAutopilotRun, id)
 	return err
+}
+
+const releaseAutopilotRunRuntimeRetryClaim = `-- name: ReleaseAutopilotRunRuntimeRetryClaim :one
+UPDATE autopilot_run
+SET runtime_retry_attempt = $2,
+    runtime_retry_after = $3,
+    runtime_retry_reason = $4
+WHERE id = $1
+  AND status = 'pending'
+RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason
+`
+
+type ReleaseAutopilotRunRuntimeRetryClaimParams struct {
+	ID                  pgtype.UUID        `json:"id"`
+	RuntimeRetryAttempt int32              `json:"runtime_retry_attempt"`
+	RuntimeRetryAfter   pgtype.Timestamptz `json:"runtime_retry_after"`
+	RuntimeRetryReason  pgtype.Text        `json:"runtime_retry_reason"`
+}
+
+// A claimed retry whose runtime is still unavailable remains pending and is
+// rescheduled atomically before the caller commits its row lock.
+func (q *Queries) ReleaseAutopilotRunRuntimeRetryClaim(ctx context.Context, arg ReleaseAutopilotRunRuntimeRetryClaimParams) (AutopilotRun, error) {
+	row := q.db.QueryRow(ctx, releaseAutopilotRunRuntimeRetryClaim,
+		arg.ID,
+		arg.RuntimeRetryAttempt,
+		arg.RuntimeRetryAfter,
+		arg.RuntimeRetryReason,
+	)
+	var i AutopilotRun
+	err := row.Scan(
+		&i.ID,
+		&i.AutopilotID,
+		&i.TriggerID,
+		&i.Source,
+		&i.Status,
+		&i.IssueID,
+		&i.TaskID,
+		&i.TriggeredAt,
+		&i.CompletedAt,
+		&i.FailureReason,
+		&i.TriggerPayload,
+		&i.Result,
+		&i.CreatedAt,
+		&i.SquadID,
+		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
+	)
+	return i, err
 }
 
 const rotateAutopilotTriggerWebhookToken = `-- name: RotateAutopilotTriggerWebhookToken :one
@@ -1265,7 +1450,7 @@ const systemPauseAutopilot = `-- name: SystemPauseAutopilot :one
 UPDATE autopilot
 SET status = 'paused', updated_at = now()
 WHERE id = $1 AND status = 'active'
-RETURNING id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id
+RETURNING id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, retry_on_runtime_unavailable
 `
 
 // Atomically pauses an autopilot only if it is currently active. Returns no
@@ -1291,6 +1476,7 @@ func (q *Queries) SystemPauseAutopilot(ctx context.Context, id pgtype.UUID) (Aut
 		&i.UpdatedAt,
 		&i.AssigneeType,
 		&i.ProjectID,
+		&i.RetryOnRuntimeUnavailable,
 	)
 	return i, err
 }
@@ -1321,21 +1507,23 @@ UPDATE autopilot SET
     execution_mode = COALESCE($7, execution_mode),
     issue_title_template = $8,
     project_id = $9,
+    retry_on_runtime_unavailable = COALESCE($10::boolean, retry_on_runtime_unavailable),
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id
+RETURNING id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, retry_on_runtime_unavailable
 `
 
 type UpdateAutopilotParams struct {
-	ID                 pgtype.UUID `json:"id"`
-	Title              pgtype.Text `json:"title"`
-	Description        pgtype.Text `json:"description"`
-	AssigneeType       pgtype.Text `json:"assignee_type"`
-	AssigneeID         pgtype.UUID `json:"assignee_id"`
-	Status             pgtype.Text `json:"status"`
-	ExecutionMode      pgtype.Text `json:"execution_mode"`
-	IssueTitleTemplate pgtype.Text `json:"issue_title_template"`
-	ProjectID          pgtype.UUID `json:"project_id"`
+	ID                        pgtype.UUID `json:"id"`
+	Title                     pgtype.Text `json:"title"`
+	Description               pgtype.Text `json:"description"`
+	AssigneeType              pgtype.Text `json:"assignee_type"`
+	AssigneeID                pgtype.UUID `json:"assignee_id"`
+	Status                    pgtype.Text `json:"status"`
+	ExecutionMode             pgtype.Text `json:"execution_mode"`
+	IssueTitleTemplate        pgtype.Text `json:"issue_title_template"`
+	ProjectID                 pgtype.UUID `json:"project_id"`
+	RetryOnRuntimeUnavailable pgtype.Bool `json:"retry_on_runtime_unavailable"`
 }
 
 func (q *Queries) UpdateAutopilot(ctx context.Context, arg UpdateAutopilotParams) (Autopilot, error) {
@@ -1349,6 +1537,7 @@ func (q *Queries) UpdateAutopilot(ctx context.Context, arg UpdateAutopilotParams
 		arg.ExecutionMode,
 		arg.IssueTitleTemplate,
 		arg.ProjectID,
+		arg.RetryOnRuntimeUnavailable,
 	)
 	var i Autopilot
 	err := row.Scan(
@@ -1367,6 +1556,7 @@ func (q *Queries) UpdateAutopilot(ctx context.Context, arg UpdateAutopilotParams
 		&i.UpdatedAt,
 		&i.AssigneeType,
 		&i.ProjectID,
+		&i.RetryOnRuntimeUnavailable,
 	)
 	return i, err
 }
@@ -1385,7 +1575,7 @@ const updateAutopilotRunCompleted = `-- name: UpdateAutopilotRunCompleted :one
 UPDATE autopilot_run
 SET status = 'completed', completed_at = now(), result = $2
 WHERE id = $1
-RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at
+RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason
 `
 
 type UpdateAutopilotRunCompletedParams struct {
@@ -1412,6 +1602,9 @@ func (q *Queries) UpdateAutopilotRunCompleted(ctx context.Context, arg UpdateAut
 		&i.CreatedAt,
 		&i.SquadID,
 		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
 	)
 	return i, err
 }
@@ -1420,7 +1613,7 @@ const updateAutopilotRunFailed = `-- name: UpdateAutopilotRunFailed :one
 UPDATE autopilot_run
 SET status = 'failed', completed_at = now(), failure_reason = $2
 WHERE id = $1
-RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at
+RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason
 `
 
 type UpdateAutopilotRunFailedParams struct {
@@ -1447,6 +1640,9 @@ func (q *Queries) UpdateAutopilotRunFailed(ctx context.Context, arg UpdateAutopi
 		&i.CreatedAt,
 		&i.SquadID,
 		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
 	)
 	return i, err
 }
@@ -1455,7 +1651,7 @@ const updateAutopilotRunIssueCreated = `-- name: UpdateAutopilotRunIssueCreated 
 UPDATE autopilot_run
 SET status = 'issue_created', issue_id = $2
 WHERE id = $1
-RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at
+RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason
 `
 
 type UpdateAutopilotRunIssueCreatedParams struct {
@@ -1482,6 +1678,9 @@ func (q *Queries) UpdateAutopilotRunIssueCreated(ctx context.Context, arg Update
 		&i.CreatedAt,
 		&i.SquadID,
 		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
 	)
 	return i, err
 }
@@ -1490,7 +1689,7 @@ const updateAutopilotRunRunning = `-- name: UpdateAutopilotRunRunning :one
 UPDATE autopilot_run
 SET status = 'running', task_id = $2
 WHERE id = $1
-RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at
+RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason
 `
 
 type UpdateAutopilotRunRunningParams struct {
@@ -1517,6 +1716,9 @@ func (q *Queries) UpdateAutopilotRunRunning(ctx context.Context, arg UpdateAutop
 		&i.CreatedAt,
 		&i.SquadID,
 		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
 	)
 	return i, err
 }
@@ -1525,7 +1727,7 @@ const updateAutopilotRunSkipped = `-- name: UpdateAutopilotRunSkipped :one
 UPDATE autopilot_run
 SET status = 'skipped', completed_at = now(), failure_reason = $2
 WHERE id = $1
-RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at
+RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason
 `
 
 type UpdateAutopilotRunSkippedParams struct {
@@ -1558,6 +1760,9 @@ func (q *Queries) UpdateAutopilotRunSkipped(ctx context.Context, arg UpdateAutop
 		&i.CreatedAt,
 		&i.SquadID,
 		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
 	)
 	return i, err
 }
@@ -1569,7 +1774,7 @@ SET status = 'skipped',
     failure_reason = $2,
     result = $3
 WHERE id = $1
-RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at
+RETURNING id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, runtime_retry_attempt, runtime_retry_after, runtime_retry_reason
 `
 
 type UpdateAutopilotRunSkippedWithResultParams struct {
@@ -1597,6 +1802,9 @@ func (q *Queries) UpdateAutopilotRunSkippedWithResult(ctx context.Context, arg U
 		&i.CreatedAt,
 		&i.SquadID,
 		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
 	)
 	return i, err
 }

@@ -3,9 +3,90 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestAutopilotRetryOnRuntimeUnavailableDefaultsFalse(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	var agentID string
+	if err := testPool.QueryRow(context.Background(), `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID); err != nil {
+		t.Fatalf("load test agent: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	testHandler.CreateAutopilot(w, newRequest(http.MethodPost, "/api/autopilots", map[string]any{
+		"title":          "runtime retry default",
+		"assignee_id":    agentID,
+		"execution_mode": "run_only",
+	}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateAutopilot: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var created AutopilotResponse
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created autopilot: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, created.ID)
+	})
+	if created.RetryOnRuntimeUnavailable {
+		t.Fatal("created retry_on_runtime_unavailable = true, want false")
+	}
+
+	w = httptest.NewRecorder()
+	testHandler.GetAutopilot(w, withURLParam(newRequest(http.MethodGet, "/api/autopilots/"+created.ID, nil), "id", created.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetAutopilot: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Autopilot AutopilotResponse `json:"autopilot"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode get autopilot: %v", err)
+	}
+	if body.Autopilot.RetryOnRuntimeUnavailable {
+		t.Fatal("GET retry_on_runtime_unavailable = true, want false")
+	}
+}
+
+func TestAutopilotRetryOnRuntimeUnavailableCanBeUpdated(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	agentID := createHandlerTestAgent(t, "runtime-retry-update-agent", []byte(`[]`))
+	autopilotID := insertListTestAutopilot(t, agentID, "runtime retry update")
+
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest(http.MethodPatch, "/api/autopilots/"+autopilotID, map[string]any{
+		"retry_on_runtime_unavailable": true,
+	}), "id", autopilotID)
+	testHandler.UpdateAutopilot(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAutopilot: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var updated AutopilotResponse
+	if err := json.NewDecoder(w.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode updated autopilot: %v", err)
+	}
+	if !updated.RetryOnRuntimeUnavailable {
+		t.Fatal("PATCH retry_on_runtime_unavailable = false, want true")
+	}
+
+	var persisted bool
+	if err := testPool.QueryRow(context.Background(), `SELECT retry_on_runtime_unavailable FROM autopilot WHERE id = $1`, autopilotID).Scan(&persisted); err != nil {
+		t.Fatalf("read persisted retry policy: %v", err)
+	}
+	if !persisted {
+		t.Fatal("persisted retry_on_runtime_unavailable = false, want true")
+	}
+}
 
 // insertListTestAutopilot creates a bare autopilot row and registers cleanup.
 // Triggers/runs cascade on delete.

@@ -36,16 +36,17 @@ type AutopilotResponse struct {
 	// AssigneeType is "agent" or "squad". Path A from MUL-2429: when set
 	// to "squad", AssigneeID points at squad(id) rather than agent(id) and
 	// dispatch resolves to squad.leader_id at run time.
-	AssigneeType       string  `json:"assignee_type"`
-	AssigneeID         string  `json:"assignee_id"`
-	Status             string  `json:"status"`
-	ExecutionMode      string  `json:"execution_mode"`
-	IssueTitleTemplate *string `json:"issue_title_template"`
-	CreatedByType      string  `json:"created_by_type"`
-	CreatedByID        string  `json:"created_by_id"`
-	LastRunAt          *string `json:"last_run_at"`
-	CreatedAt          string  `json:"created_at"`
-	UpdatedAt          string  `json:"updated_at"`
+	AssigneeType              string  `json:"assignee_type"`
+	AssigneeID                string  `json:"assignee_id"`
+	Status                    string  `json:"status"`
+	ExecutionMode             string  `json:"execution_mode"`
+	RetryOnRuntimeUnavailable bool    `json:"retry_on_runtime_unavailable"`
+	IssueTitleTemplate        *string `json:"issue_title_template"`
+	CreatedByType             string  `json:"created_by_type"`
+	CreatedByID               string  `json:"created_by_id"`
+	LastRunAt                 *string `json:"last_run_at"`
+	CreatedAt                 string  `json:"created_at"`
+	UpdatedAt                 string  `json:"updated_at"`
 
 	// List-endpoint-only derived fields (absent on the detail/create/update
 	// responses and on older servers — clients must treat them as optional).
@@ -175,22 +176,23 @@ func autopilotToResponse(a db.Autopilot, subscribers []db.AutopilotSubscriber) A
 		}
 	}
 	return AutopilotResponse{
-		ID:                 uuidToString(a.ID),
-		WorkspaceID:        uuidToString(a.WorkspaceID),
-		Title:              a.Title,
-		Description:        textToPtr(a.Description),
-		ProjectID:          uuidToPtr(a.ProjectID),
-		AssigneeType:       assigneeType,
-		AssigneeID:         uuidToString(a.AssigneeID),
-		Status:             a.Status,
-		ExecutionMode:      a.ExecutionMode,
-		IssueTitleTemplate: textToPtr(a.IssueTitleTemplate),
-		CreatedByType:      a.CreatedByType,
-		CreatedByID:        uuidToString(a.CreatedByID),
-		LastRunAt:          timestampToPtr(a.LastRunAt),
-		CreatedAt:          timestampToString(a.CreatedAt),
-		UpdatedAt:          timestampToString(a.UpdatedAt),
-		Subscribers:        subResp,
+		ID:                        uuidToString(a.ID),
+		WorkspaceID:               uuidToString(a.WorkspaceID),
+		Title:                     a.Title,
+		Description:               textToPtr(a.Description),
+		ProjectID:                 uuidToPtr(a.ProjectID),
+		AssigneeType:              assigneeType,
+		AssigneeID:                uuidToString(a.AssigneeID),
+		Status:                    a.Status,
+		ExecutionMode:             a.ExecutionMode,
+		RetryOnRuntimeUnavailable: a.RetryOnRuntimeUnavailable,
+		IssueTitleTemplate:        textToPtr(a.IssueTitleTemplate),
+		CreatedByType:             a.CreatedByType,
+		CreatedByID:               uuidToString(a.CreatedByID),
+		LastRunAt:                 timestampToPtr(a.LastRunAt),
+		CreatedAt:                 timestampToString(a.CreatedAt),
+		UpdatedAt:                 timestampToString(a.UpdatedAt),
+		Subscribers:               subResp,
 	}
 }
 
@@ -303,22 +305,24 @@ type CreateAutopilotRequest struct {
 	ProjectID   *string `json:"project_id"`
 	// AssigneeType is optional and defaults to "agent" — preserves backward
 	// compatibility with desktop clients shipped before MUL-2429.
-	AssigneeType       *string           `json:"assignee_type"`
-	AssigneeID         string            `json:"assignee_id"`
-	ExecutionMode      string            `json:"execution_mode"`
-	IssueTitleTemplate *string           `json:"issue_title_template"`
-	Subscribers        []SubscriberInput `json:"subscribers"`
+	AssigneeType              *string           `json:"assignee_type"`
+	AssigneeID                string            `json:"assignee_id"`
+	ExecutionMode             string            `json:"execution_mode"`
+	RetryOnRuntimeUnavailable *bool             `json:"retry_on_runtime_unavailable"`
+	IssueTitleTemplate        *string           `json:"issue_title_template"`
+	Subscribers               []SubscriberInput `json:"subscribers"`
 }
 
 type UpdateAutopilotRequest struct {
-	Title              *string `json:"title"`
-	Description        *string `json:"description"`
-	ProjectID          *string `json:"project_id"`
-	AssigneeType       *string `json:"assignee_type"`
-	AssigneeID         *string `json:"assignee_id"`
-	Status             *string `json:"status"`
-	ExecutionMode      *string `json:"execution_mode"`
-	IssueTitleTemplate *string `json:"issue_title_template"`
+	Title                     *string `json:"title"`
+	Description               *string `json:"description"`
+	ProjectID                 *string `json:"project_id"`
+	AssigneeType              *string `json:"assignee_type"`
+	AssigneeID                *string `json:"assignee_id"`
+	Status                    *string `json:"status"`
+	ExecutionMode             *string `json:"execution_mode"`
+	RetryOnRuntimeUnavailable *bool   `json:"retry_on_runtime_unavailable"`
+	IssueTitleTemplate        *string `json:"issue_title_template"`
 	// Wholesale replacement when present; omit to leave subscribers untouched.
 	Subscribers []SubscriberInput `json:"subscribers"`
 }
@@ -643,6 +647,10 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	retryOnRuntimeUnavailable := false
+	if req.RetryOnRuntimeUnavailable != nil {
+		retryOnRuntimeUnavailable = *req.RetryOnRuntimeUnavailable
+	}
 
 	// Validate before insert so a bad payload doesn't half-create the row.
 	subscriberUUIDs, ok := h.validateAutopilotSubscribers(w, r, req.Subscribers, workspaceID)
@@ -659,17 +667,18 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 	qtx := h.Queries.WithTx(tx)
 
 	autopilot, err := qtx.CreateAutopilot(r.Context(), db.CreateAutopilotParams{
-		WorkspaceID:        wsUUID,
-		Title:              req.Title,
-		AssigneeType:       assigneeType,
-		AssigneeID:         assigneeUUID,
-		Status:             "active",
-		ExecutionMode:      req.ExecutionMode,
-		CreatedByType:      "member",
-		CreatedByID:        parseUUID(userID),
-		Description:        ptrToText(req.Description),
-		IssueTitleTemplate: ptrToText(req.IssueTitleTemplate),
-		ProjectID:          projectID,
+		WorkspaceID:               wsUUID,
+		Title:                     req.Title,
+		AssigneeType:              assigneeType,
+		AssigneeID:                assigneeUUID,
+		Status:                    "active",
+		ExecutionMode:             req.ExecutionMode,
+		CreatedByType:             "member",
+		CreatedByID:               parseUUID(userID),
+		RetryOnRuntimeUnavailable: retryOnRuntimeUnavailable,
+		Description:               ptrToText(req.Description),
+		IssueTitleTemplate:        ptrToText(req.IssueTitleTemplate),
+		ProjectID:                 projectID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create autopilot")
@@ -792,6 +801,9 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ExecutionMode != nil {
 		params.ExecutionMode = pgtype.Text{String: *req.ExecutionMode, Valid: true}
+	}
+	if _, ok := rawFields["retry_on_runtime_unavailable"]; ok && req.RetryOnRuntimeUnavailable != nil {
+		params.RetryOnRuntimeUnavailable = pgtype.Bool{Bool: *req.RetryOnRuntimeUnavailable, Valid: true}
 	}
 	if _, ok := rawFields["description"]; ok {
 		params.Description = ptrToText(req.Description)

@@ -48,11 +48,11 @@ WHERE id = $1 AND workspace_id = $2;
 INSERT INTO autopilot (
     workspace_id, title, description, assignee_type, assignee_id,
     status, execution_mode, issue_title_template, project_id,
-    created_by_type, created_by_id
+    created_by_type, created_by_id, retry_on_runtime_unavailable
 ) VALUES (
     $1, $2, sqlc.narg('description'), $3, $4,
     $5, $6, sqlc.narg('issue_title_template'), sqlc.narg('project_id'),
-    $7, $8
+    $7, $8, $9
 ) RETURNING *;
 
 -- name: UpdateAutopilot :one
@@ -65,6 +65,7 @@ UPDATE autopilot SET
     execution_mode = COALESCE(sqlc.narg('execution_mode'), execution_mode),
     issue_title_template = sqlc.narg('issue_title_template'),
     project_id = sqlc.narg('project_id'),
+    retry_on_runtime_unavailable = COALESCE(sqlc.narg('retry_on_runtime_unavailable')::boolean, retry_on_runtime_unavailable),
     updated_at = now()
 WHERE id = $1
 RETURNING *;
@@ -291,6 +292,51 @@ SET status = 'skipped',
     result = sqlc.narg('result')
 WHERE id = $1
 RETURNING *;
+
+-- name: DeferAutopilotRunForRuntimeRetry :one
+-- Converts a runtime-unavailable occurrence into a deferred pending run.
+UPDATE autopilot_run
+SET status = 'pending',
+    completed_at = NULL,
+    runtime_retry_attempt = $2,
+    runtime_retry_after = $3,
+    runtime_retry_reason = sqlc.narg('runtime_retry_reason')
+WHERE id = $1
+RETURNING *;
+
+-- name: ClaimDueAutopilotRunForRuntimeRetry :one
+-- Must be called inside a transaction; SKIP LOCKED lets retry workers make
+-- progress independently without double-dispatching the same occurrence.
+SELECT * FROM autopilot_run
+WHERE status = 'pending'
+  AND runtime_retry_after IS NOT NULL
+  AND runtime_retry_after <= now()
+ORDER BY runtime_retry_after ASC, id ASC
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
+
+-- name: ReleaseAutopilotRunRuntimeRetryClaim :one
+-- A claimed retry whose runtime is still unavailable remains pending and is
+-- rescheduled atomically before the caller commits its row lock.
+UPDATE autopilot_run
+SET runtime_retry_attempt = $2,
+    runtime_retry_after = $3,
+    runtime_retry_reason = sqlc.narg('runtime_retry_reason')
+WHERE id = $1
+  AND status = 'pending'
+RETURNING *;
+
+-- name: AutopilotHasCompletedRunInUTCWindow :one
+-- The caller supplies UTC day boundaries [start, end), avoiding session
+-- timezone ambiguity when enforcing a once-per-day occurrence policy.
+SELECT EXISTS (
+    SELECT 1
+    FROM autopilot_run
+    WHERE autopilot_id = $1
+      AND status = 'completed'
+      AND completed_at >= sqlc.arg('window_start')::timestamptz
+      AND completed_at < sqlc.arg('window_end')::timestamptz
+) AS has_completed_run;
 
 -- =====================
 -- Scheduler Queries

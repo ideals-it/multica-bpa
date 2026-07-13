@@ -157,21 +157,22 @@ type Attachment struct {
 }
 
 type Autopilot struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Title              string             `json:"title"`
-	Description        pgtype.Text        `json:"description"`
-	AssigneeID         pgtype.UUID        `json:"assignee_id"`
-	Status             string             `json:"status"`
-	ExecutionMode      string             `json:"execution_mode"`
-	IssueTitleTemplate pgtype.Text        `json:"issue_title_template"`
-	CreatedByType      string             `json:"created_by_type"`
-	CreatedByID        pgtype.UUID        `json:"created_by_id"`
-	LastRunAt          pgtype.Timestamptz `json:"last_run_at"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	AssigneeType       string             `json:"assignee_type"`
-	ProjectID          pgtype.UUID        `json:"project_id"`
+	ID                        pgtype.UUID        `json:"id"`
+	WorkspaceID               pgtype.UUID        `json:"workspace_id"`
+	Title                     string             `json:"title"`
+	Description               pgtype.Text        `json:"description"`
+	AssigneeID                pgtype.UUID        `json:"assignee_id"`
+	Status                    string             `json:"status"`
+	ExecutionMode             string             `json:"execution_mode"`
+	IssueTitleTemplate        pgtype.Text        `json:"issue_title_template"`
+	CreatedByType             string             `json:"created_by_type"`
+	CreatedByID               pgtype.UUID        `json:"created_by_id"`
+	LastRunAt                 pgtype.Timestamptz `json:"last_run_at"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
+	AssigneeType              string             `json:"assignee_type"`
+	ProjectID                 pgtype.UUID        `json:"project_id"`
+	RetryOnRuntimeUnavailable bool               `json:"retry_on_runtime_unavailable"`
 }
 
 type AutopilotCollaborator struct {
@@ -183,21 +184,24 @@ type AutopilotCollaborator struct {
 }
 
 type AutopilotRun struct {
-	ID             pgtype.UUID        `json:"id"`
-	AutopilotID    pgtype.UUID        `json:"autopilot_id"`
-	TriggerID      pgtype.UUID        `json:"trigger_id"`
-	Source         string             `json:"source"`
-	Status         string             `json:"status"`
-	IssueID        pgtype.UUID        `json:"issue_id"`
-	TaskID         pgtype.UUID        `json:"task_id"`
-	TriggeredAt    pgtype.Timestamptz `json:"triggered_at"`
-	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
-	FailureReason  pgtype.Text        `json:"failure_reason"`
-	TriggerPayload []byte             `json:"trigger_payload"`
-	Result         []byte             `json:"result"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	SquadID        pgtype.UUID        `json:"squad_id"`
-	PlannedAt      pgtype.Timestamptz `json:"planned_at"`
+	ID                  pgtype.UUID        `json:"id"`
+	AutopilotID         pgtype.UUID        `json:"autopilot_id"`
+	TriggerID           pgtype.UUID        `json:"trigger_id"`
+	Source              string             `json:"source"`
+	Status              string             `json:"status"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	TaskID              pgtype.UUID        `json:"task_id"`
+	TriggeredAt         pgtype.Timestamptz `json:"triggered_at"`
+	CompletedAt         pgtype.Timestamptz `json:"completed_at"`
+	FailureReason       pgtype.Text        `json:"failure_reason"`
+	TriggerPayload      []byte             `json:"trigger_payload"`
+	Result              []byte             `json:"result"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	SquadID             pgtype.UUID        `json:"squad_id"`
+	PlannedAt           pgtype.Timestamptz `json:"planned_at"`
+	RuntimeRetryAttempt int32              `json:"runtime_retry_attempt"`
+	RuntimeRetryAfter   pgtype.Timestamptz `json:"runtime_retry_after"`
+	RuntimeRetryReason  pgtype.Text        `json:"runtime_retry_reason"`
 }
 
 type AutopilotSubscriber struct {
