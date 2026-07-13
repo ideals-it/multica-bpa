@@ -1,5 +1,15 @@
 # BPA fork changelog
 
+## 2026-07-13 — Emoji approval for Production review
+
+On the assigned Lead's root-level Production approval comment, a member's 👍
+or 👌 now records the current ticket scope as approved and queues Lead to
+resume the same ticket. ❤️, ✅, 👎, reactions on other comments, and all agent
+reactions remain ordinary reactions with no approval effect.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-13 — Visible specialist handoff to Lead
 
 For a task-scoped specialist comment on an agent-owned main ticket, the server now

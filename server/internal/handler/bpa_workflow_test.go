@@ -41,6 +41,58 @@ func TestBPAApprovalCommentRejectsDeploymentQuestionOrNegation(t *testing.T) {
 	}
 }
 
+func TestBPAApprovalEmojiAcceptsThumbsUpAndOKOnly(t *testing.T) {
+	for _, emoji := range []string{"👍", "👌"} {
+		if !isBPAApprovalEmoji(emoji) {
+			t.Fatalf("approval emoji %q was rejected", emoji)
+		}
+	}
+	for _, emoji := range []string{"❤️", "✅", "👎"} {
+		if isBPAApprovalEmoji(emoji) {
+			t.Fatalf("non-approval emoji %q was accepted", emoji)
+		}
+	}
+}
+
+func TestLeadApprovalReactionApprovesPendingProductionScope(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	leadID := createHandlerTestAgent(t, "ReactionApprovalLead", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92141, "reaction approval")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := newRequest(http.MethodPost, "/", nil)
+	issue, err = testHandler.setBPAWorkflowValues(req, issue, map[string]any{"bpa.template": string(bpa.TemplateProduction)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.beginBPAHumanReview(req, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	comment := db.Comment{IssueID: issue.ID, AuthorType: "agent", AuthorID: parseUUID(leadID)}
+	updated, approved, err := testHandler.approveBPAReviewReaction(req, comment, "member", "👍")
+	if err != nil || !approved {
+		t.Fatalf("thumbs-up approval = approved:%t err:%v", approved, err)
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(updated.Metadata))
+	if err != nil || state.ApprovalStatus != bpa.ApprovalApproved || state.WaitingFor != bpa.WaitingForLead {
+		t.Fatalf("reaction approval state = %#v, err=%v", state, err)
+	}
+}
+
 func TestBPAWorkerCommentGetsLeadHandoffWhenNoOwnerMentioned(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

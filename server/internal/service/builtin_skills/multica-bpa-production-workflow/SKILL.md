@@ -56,8 +56,9 @@ Lead → specialist → Quality → Lead → human approval → specialist → Q
    title and description; a new approval is needed only after that scope
    changes. Ask Vitaliy for a clear standalone confirmation such as
    `Погоджую`, `Деплой`, `Роби`, or `Виконуй`. An agent mention may accompany
-   that directive; a question or a negation is not approval. Moving the card
-   manually is not approval.
+   that directive; a question or a negation is not approval. On the Lead's
+   root-level approval comment, Vitaliy may instead react with 👍 or 👌. Moving
+   the card manually is not approval.
 5. The execution specialist and Quality post their result/postflight on the
    root. Lead closes it as `Done` or records the exact blocker.
 

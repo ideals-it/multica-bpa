@@ -84,6 +84,18 @@ func (h *Handler) AddReaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to add reaction")
 		return
 	}
+	if approvedIssue, approved, approvalErr := h.approveBPAReviewReaction(r, comment, actorType, req.Emoji); approvalErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record BPA approval")
+		return
+	} else if approved {
+		if _, err := h.TaskService.EnqueueTaskForIssue(r.Context(), approvedIssue); err != nil {
+			slog.Warn("enqueue Lead after BPA reaction approval failed",
+				"issue_id", uuidToString(approvedIssue.ID),
+				"comment_id", commentId,
+				"error", err,
+			)
+		}
+	}
 
 	resp := reactionToResponse(reaction)
 

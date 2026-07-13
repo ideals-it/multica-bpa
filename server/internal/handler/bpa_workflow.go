@@ -388,6 +388,41 @@ func isBPAApprovalComment(content string) bool {
 	}
 }
 
+func isBPAApprovalEmoji(emoji string) bool {
+	return emoji == "👍" || emoji == "👌"
+}
+
+// approveBPAReviewReaction accepts only a member's thumbs-up or OK reaction
+// on the assigned Lead's root-level approval request. Reactions on other
+// comments remain ordinary reactions and cannot authorize production work.
+func (h *Handler) approveBPAReviewReaction(r *http.Request, comment db.Comment, actorType, emoji string) (db.Issue, bool, error) {
+	if actorType != "member" || !isBPAApprovalEmoji(emoji) || comment.AuthorType != "agent" || !comment.AuthorID.Valid {
+		return db.Issue{}, false, nil
+	}
+	issue, err := h.Queries.GetIssue(r.Context(), comment.IssueID)
+	if err != nil {
+		return db.Issue{}, false, err
+	}
+	root, enabled, err := h.bpaRoot(r.Context(), issue)
+	if err != nil || !enabled || root.ID != issue.ID || root.AssigneeType.String != "agent" ||
+		!root.AssigneeID.Valid || root.AssigneeID != comment.AuthorID {
+		return issue, false, err
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(root.Metadata))
+	if err != nil {
+		return root, false, err
+	}
+	updated, err := h.approveBPAReviewComment(r, root, actorType, "Погоджую")
+	if err != nil {
+		return root, false, err
+	}
+	updatedState, err := bpa.ParseState(parseIssueMetadata(updated.Metadata))
+	if err != nil {
+		return updated, false, err
+	}
+	return updated, state.ApprovalStatus == bpa.ApprovalPending && updatedState.ApprovalStatus == bpa.ApprovalApproved, nil
+}
+
 func (h *Handler) approveBPAReviewComment(r *http.Request, issue db.Issue, actorType, content string) (db.Issue, error) {
 	if actorType != "member" || issue.Status != "in_review" || !isBPAApprovalComment(content) {
 		return issue, nil
