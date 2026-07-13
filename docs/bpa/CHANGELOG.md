@@ -1,5 +1,16 @@
 # BPA fork changelog
 
+## 2026-07-13 — Active handoff status guard
+
+The server now rejects an agent attempt to set a ticket to `Blocked` while a
+different agent task on that ticket is still `queued`, `dispatched`,
+`waiting_local_directory`, or `running`. A member may still block a ticket,
+and an agent may still do so when no delegated task is active.
+
+This keeps `waiting_local_directory` as a normal local-directory mutex state,
+not a false workflow blocker. No UI, board column, predefined status,
+production service, IAM, secret, or deployment behavior was changed.
+
 ## 2026-07-13 — Lead-owned main-ticket summary
 
 Kept the existing UI, board columns, and statuses unchanged while making the

@@ -75,6 +75,22 @@ type IssueResponse struct {
 var validIssueStatuses = []string{"backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"}
 var validIssuePriorities = []string{"urgent", "high", "medium", "low", "none"}
 
+func (h *Handler) validateAgentBlockedTransition(ctx context.Context, issue db.Issue, actorType, actorID string) error {
+	if actorType != "agent" {
+		return nil
+	}
+	tasks, err := h.Queries.ListActiveTasksByIssue(ctx, issue.ID)
+	if err != nil {
+		return fmt.Errorf("load active delegated tasks: %w", err)
+	}
+	for _, task := range tasks {
+		if uuidToString(task.AgentID) != actorID {
+			return errors.New("cannot mark ticket blocked while a delegated task is still active")
+		}
+	}
+	return nil
+}
+
 func validateIssueEnum(w http.ResponseWriter, field, value string, allowed []string) bool {
 	for _, a := range allowed {
 		if value == a {
@@ -2486,6 +2502,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.Status != nil {
 		if !validateIssueEnum(w, "status", *req.Status, validIssueStatuses) {
 			return
+		}
+		if *req.Status == "blocked" && prevIssue.Status != "blocked" {
+			if err := h.validateAgentBlockedTransition(r.Context(), prevIssue, actorType, actorID); err != nil {
+				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
 		}
 		params.Status = pgtype.Text{String: *req.Status, Valid: true}
 	}

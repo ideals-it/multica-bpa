@@ -301,8 +301,8 @@ func TestBootstrapOnboardingRuntimeCreatesSingleGuideIssue(t *testing.T) {
 	if assigneeType != "agent" || assigneeID != resp.AgentID {
 		t.Fatalf("issue assignee = %s/%s, want agent/%s", assigneeType, assigneeID, resp.AgentID)
 	}
-	if issueStatus != "todo" || issuePriority != "high" {
-		t.Fatalf("issue status/priority = %s/%s, want todo/high", issueStatus, issuePriority)
+	if issueStatus != "in_progress" || issuePriority != "high" {
+		t.Fatalf("issue status/priority = %s/%s, want in_progress/high", issueStatus, issuePriority)
 	}
 
 	var (
