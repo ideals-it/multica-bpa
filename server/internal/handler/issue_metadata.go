@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/bpa"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -162,6 +164,22 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	if key == "bpa.archivist_agent_id" && actorType != "member" {
+		writeError(w, http.StatusForbidden, "only a human member can configure the BPA Archivist")
+		return
+	}
+	if strings.HasPrefix(key, "bpa.knowledge_") {
+		writeError(w, http.StatusForbidden, "BPA knowledge metadata is server-managed")
+		return
+	}
+	if key == "bpa.archive_summary" || key == "bpa.archive_updated_at" {
+		archivistID, _ := parseIssueMetadata(issue.Metadata)["bpa.archivist_agent_id"].(string)
+		if actorType != "agent" || !bpa.CanWriteArchivistMetadata(key, actorID, archivistID) {
+			writeError(w, http.StatusForbidden, "only the configured BPA Archivist can write archive metadata")
+			return
+		}
+	}
 
 	// Enforce the key-count cap in the handler. The DB only guards size,
 	// and a clear 4xx for "too many keys" beats a CHECK violation that
@@ -189,12 +207,14 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	workspaceID := uuidToString(updated.WorkspaceID)
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	metadata := parseIssueMetadata(updated.Metadata)
 	h.publish(protocol.EventIssueMetadataChanged, workspaceID, actorType, actorID, map[string]any{
 		"issue_id": uuidToString(updated.ID),
 		"metadata": metadata,
 	})
+	if strings.HasPrefix(key, "bpa.") && key != "bpa.archive_summary" && key != "bpa.archive_updated_at" {
+		h.queueBPAArchivist(r.Context(), updated, "metadata_changed")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"metadata": metadata})
 }
 
@@ -212,6 +232,10 @@ func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request)
 	}
 	userID, ok := requireUserID(w, r)
 	if !ok {
+		return
+	}
+	if strings.HasPrefix(key, "bpa.knowledge_") || key == "bpa.archive_summary" || key == "bpa.archive_updated_at" {
+		writeError(w, http.StatusForbidden, "BPA knowledge and archive metadata cannot be deleted")
 		return
 	}
 
@@ -237,5 +261,8 @@ func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request)
 		"issue_id": uuidToString(updated.ID),
 		"metadata": metadata,
 	})
+	if strings.HasPrefix(key, "bpa.") {
+		h.queueBPAArchivist(r.Context(), updated, "metadata_changed")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"metadata": metadata})
 }

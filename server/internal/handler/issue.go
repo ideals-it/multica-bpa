@@ -2366,6 +2366,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	resp := issueToResponse(issue, prefix)
 	resp.Attachments = buildAttachmentResponses(res.Attachments)
+	h.queueBPAArchivist(r.Context(), issue, "issue_created")
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -2581,6 +2582,28 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if req.Status != nil && *req.Status == "done" && prevIssue.Status != "done" {
+		hasCommitEvidence, evidenceErr := h.bpaChildHasCommitEvidence(r.Context(), prevIssue)
+		if evidenceErr != nil {
+			slog.Warn("check BPA child commit evidence failed", append(logger.RequestAttrs(r), "error", evidenceErr, "issue_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to check BPA child commit evidence")
+			return
+		}
+		if !hasCommitEvidence {
+			writeError(w, http.StatusConflict, "BPA child needs a commit SHA or explicit no repo changes reason before completion")
+			return
+		}
+		hasOpenChildren, guardErr := h.bpaRootHasOpenChildren(r.Context(), prevIssue)
+		if guardErr != nil {
+			slog.Warn("check BPA root fan-in failed", append(logger.RequestAttrs(r), "error", guardErr, "issue_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to check BPA child tasks")
+			return
+		}
+		if hasOpenChildren {
+			writeError(w, http.StatusConflict, "BPA main task cannot be closed while child tasks are still open")
+			return
+		}
+	}
 
 	issue, err := h.Queries.UpdateIssue(r.Context(), params)
 	if err != nil {
@@ -2614,6 +2637,19 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	prevDueDate := dateToPtr(prevIssue.DueDate)
 	dueDateChanged := prevDueDate != resp.DueDate && (prevDueDate == nil) != (resp.DueDate == nil) ||
 		(prevDueDate != nil && resp.DueDate != nil && *prevDueDate != *resp.DueDate)
+
+	// A Production root entering In Review requests approval for the ticket's
+	// current scope. Editing that scope while it is under review starts a new
+	// approval cycle before any agent can receive an execution run.
+	if issue.Status == "in_review" && (statusChanged || titleChanged || descriptionChanged) {
+		if reviewedIssue, reviewErr := h.beginBPAHumanReview(r, issue); reviewErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to prepare BPA review")
+			return
+		} else {
+			issue = reviewedIssue
+			resp = issueToResponse(issue, prefix)
+		}
+	}
 
 	// Determine actor identity: agent (via X-Agent-ID header) or member.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
@@ -2680,6 +2716,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// fails best-effort.
 	if statusChanged {
 		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
+		h.notifyParentOfChildBlocked(r.Context(), prevIssue, issue)
+	}
+	if statusChanged || assigneeChanged || titleChanged || descriptionChanged || projectChanged {
+		h.queueBPAArchivist(r.Context(), issue, "issue_changed")
 	}
 
 	writeJSON(w, http.StatusOK, resp)

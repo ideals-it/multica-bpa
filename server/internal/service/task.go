@@ -805,6 +805,16 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, pgtype.UUID{}, false, "")
 }
 
+// EnqueueTaskForBPAArchivist is a narrow read-only exception to the BPA
+// production dispatch gate. It clears only workflow metadata for the enqueue
+// policy check; the task still targets the real issue and all runtime, agent,
+// concurrency, and database dedup guards remain active.
+func (s *TaskService) EnqueueTaskForBPAArchivist(ctx context.Context, issue db.Issue, agentID pgtype.UUID) (db.AgentTaskQueue, error) {
+	readOnlyIssue := issue
+	readOnlyIssue.Metadata = nil
+	return s.enqueueMentionTask(ctx, readOnlyIssue, agentID, pgtype.UUID{}, false, pgtype.UUID{}, false, "")
+}
+
 // EnqueueTaskForThreadParent creates a queued task for the agent who authored
 // the direct parent comment a member replied to.
 func (s *TaskService) EnqueueTaskForThreadParent(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID) (db.AgentTaskQueue, error) {
@@ -1930,12 +1940,11 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 
 	// Invariant: every completed issue task must have at least one agent
 	// comment on the issue, so the user always sees something when a run
-	// ends. If the agent posted a comment during execution (result, progress
-	// ping, or CLI reply), HasAgentCommentedSince returns true and we skip.
-	// Otherwise, synthesize one from the final output. For comment-triggered
-	// tasks, TriggerCommentID threads the fallback under the original comment;
-	// for assignment-triggered tasks it is NULL and the fallback is top-level.
-	// Chat tasks have no IssueID and are handled separately below.
+	// ends. BPA Archivist is the deliberate exception: its derived result is
+	// stored in protected archive metadata while the full output remains in run
+	// history, so synthesizing that output would create the technical comment
+	// noise the role exists to avoid. Chat tasks have no IssueID and are handled
+	// separately below.
 	if task.IssueID.Valid {
 		suppressNoActionComment, err := HasSquadLeaderNoActionEvaluationForTask(ctx, s.Queries, task)
 		if err != nil {
@@ -1946,12 +1955,13 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 				"error", err,
 			)
 		}
+		suppressArchivistComment := s.isBPAArchivistTask(ctx, task)
 		agentCommented, _ := s.Queries.HasAgentCommentedSince(ctx, db.HasAgentCommentedSinceParams{
 			IssueID:  task.IssueID,
 			AuthorID: task.AgentID,
 			Since:    task.StartedAt,
 		})
-		if !suppressNoActionComment && !agentCommented {
+		if !suppressNoActionComment && !suppressArchivistComment && !agentCommented {
 			var payload protocol.TaskCompletedPayload
 			if err := json.Unmarshal(result, &payload); err == nil {
 				if payload.Output != "" {
@@ -2004,6 +2014,25 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCompleted, task)
 
 	return &task, nil
+}
+
+func (s *TaskService) isBPAArchivistTask(ctx context.Context, task db.AgentTaskQueue) bool {
+	issue, err := s.Queries.GetIssue(ctx, task.IssueID)
+	if err != nil {
+		return false
+	}
+	if issue.ParentIssueID.Valid {
+		issue, err = s.Queries.GetIssue(ctx, issue.ParentIssueID)
+		if err != nil {
+			return false
+		}
+	}
+	metadata := map[string]any{}
+	if err := json.Unmarshal(issue.Metadata, &metadata); err != nil {
+		return false
+	}
+	archivistID, _ := metadata["bpa.archivist_agent_id"].(string)
+	return archivistID != "" && archivistID == util.UUIDToString(task.AgentID)
 }
 
 // chatNoResponseFallback is the non-empty English body stored on a no_response

@@ -26,7 +26,17 @@ The backend behavior behind this workflow is traced in
 - Team Lead owns the root issue from start to finish. Only Team Lead creates
   children, promotes a parked stage, and closes the root.
 - A specialist owns one child and one durable result. Use Documentation Writer,
-  Builder, or n8n Prod only when its specialty matches the work.
+  Builder, n8n Prod, or GitHub Ops only when its specialty matches the work.
+- The agent that changes a repository owns one focused local commit after its
+  logical part is complete. Its handoff includes the commit SHA and checks.
+  If it made no repository change, it says `no repo changes` and why.
+- GitHub Ops owns push, PR, merge, and GitHub-only publication. It does not
+  take over another agent's local commit merely for ceremony.
+- n8n Prod owns n8n workflow diagnosis, change preparation, and n8n-specific
+  verification. It does not deploy or activate production changes without the
+  Production workflow's approved execution stage.
+- EventCatalog owns service and workflow documentation, event contracts, and
+  catalog verification. It does not silently change runtime behavior.
 - Quality is a separate child issue. It reviews the result; it is never an
   assignee swap on the specialist child.
 - The root must be assigned to Team Lead before this workflow starts.
@@ -67,6 +77,8 @@ handoff comment:
 
 Перевірка: <how it was checked>
 
+Commit: <SHA, or "no repo changes: <reason>">
+
 Ризик: <remaining risk, or "немає відомого">
 
 Наступне: Team Lead запускає Quality-перевірку.
@@ -74,6 +86,13 @@ handoff comment:
 
 Do not create another child, change the root assignee, or comment merely to say
 that work started. Then mark the specialist child `done`.
+
+## Question or blocker
+
+Normal handoff never needs a tag: completion wakes Lead. If work cannot
+continue or needs a decision, write one short child comment and mark the child
+`blocked`. Multica wakes Lead automatically. Never tag another specialist or
+Quality to route work.
 
 ## Lead promotes Quality
 
@@ -94,6 +113,8 @@ Quality checks the stated criterion, then posts one comment on its own child:
 
 ```text
 Результат: <accepted result, or the single concrete defect>
+
+Висновок: Прийнято / Потрібні зміни
 
 Перевірка: <what Quality checked>
 

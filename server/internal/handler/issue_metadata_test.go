@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,60 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestBPAArchivistMetadataWriteBoundary(t *testing.T) {
+	issueID := createMetadataTestIssue(t, "BPA Archivist metadata boundary")
+	ctx := context.Background()
+
+	var archivistID string
+	if err := testPool.QueryRow(ctx, `SELECT id FROM agent WHERE workspace_id = $1 AND name = 'Handler Test Agent'`, testWorkspaceID).Scan(&archivistID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET metadata = $2::jsonb WHERE id = $1`, issueID, fmt.Sprintf(`{"bpa.template":"standard","bpa.archivist_agent_id":%q,"bpa.knowledge_status":"todo"}`, archivistID)); err != nil {
+		t.Fatal(err)
+	}
+
+	set := func(key, value, actorID string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest(http.MethodPut, "/api/issues/"+issueID+"/metadata/"+key, json.RawMessage(`{"value":`+value+`}`))
+		req = withURLParams(req, "id", issueID, "key", key)
+		if actorID != "" {
+			req.Header.Set("X-Actor-Source", "task_token")
+			req.Header.Set("X-Agent-ID", actorID)
+		}
+		testHandler.SetIssueMetadataKey(w, req)
+		return w
+	}
+
+	if w := set("bpa.archive_summary", `"Стан: у роботі"`, ""); w.Code != http.StatusForbidden {
+		t.Fatalf("member archive write: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := set("bpa.archive_summary", `"Стан: у роботі"`, "00000000-0000-0000-0000-000000000001"); w.Code != http.StatusForbidden {
+		t.Fatalf("other agent archive write: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := set("bpa.knowledge_status", `"done"`, archivistID); w.Code != http.StatusForbidden {
+		t.Fatalf("Archivist knowledge write: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := set("bpa.archivist_agent_id", `"`+archivistID+`"`, archivistID); w.Code != http.StatusForbidden {
+		t.Fatalf("agent self-election as Archivist: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := set("bpa.archive_summary", `"Стан: у роботі"`, archivistID); w.Code != http.StatusOK {
+		t.Fatalf("configured Archivist archive write: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	for _, key := range []string{"bpa.knowledge_status", "bpa.archive_summary"} {
+		w := httptest.NewRecorder()
+		req := newRequest(http.MethodDelete, "/api/issues/"+issueID+"/metadata/"+key, nil)
+		req = withURLParams(req, "id", issueID, "key", key)
+		req.Header.Set("X-Actor-Source", "task_token")
+		req.Header.Set("X-Agent-ID", archivistID)
+		testHandler.DeleteIssueMetadataKey(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("delete protected key %s: expected 403, got %d: %s", key, w.Code, w.Body.String())
+		}
+	}
+}
 
 // Round-trip: set primitives of each type, list, get them back, delete, confirm gone.
 func TestIssueMetadataSetGetDelete(t *testing.T) {

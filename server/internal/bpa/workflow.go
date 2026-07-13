@@ -46,15 +46,17 @@ type IssueRef struct {
 }
 
 type State struct {
-	Template            Template
-	WaitingFor          WaitingFor
-	ProductionAction    bool
-	PlanFingerprint     string
-	ApprovalFingerprint string
-	ApprovalStatus      ApprovalStatus
-	ApprovalSummary     string
-	BlockerOwner        string
-	BlockerAction       string
+	Template                 Template
+	WaitingFor               WaitingFor
+	ProductionAction         bool
+	PlanFingerprint          string
+	ApprovalFingerprint      string
+	ApprovalStatus           ApprovalStatus
+	ApprovalSummary          string
+	BlockerOwner             string
+	BlockerAction            string
+	ScopeFingerprint         string
+	ApprovedScopeFingerprint string
 }
 
 func (s State) Enabled() bool {
@@ -85,6 +87,12 @@ func ValidateTemplateStart(template Template, issue IssueRef) error {
 func PlanFingerprint(plan string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(plan)))
 	return fmt.Sprintf("sha256:%x", sum)
+}
+
+// TicketScopeFingerprint binds approval to what the ticket asks to execute,
+// rather than to individual production commands.
+func TicketScopeFingerprint(title, description string) string {
+	return PlanFingerprint(title + "\n" + description)
 }
 
 // ParseState reads BPA's namespaced metadata keys only. Missing BPA metadata
@@ -123,6 +131,12 @@ func ParseState(metadata map[string]any) (State, error) {
 	if state.BlockerAction, err = stringValue(metadata, "bpa.blocker_action"); err != nil {
 		return State{}, err
 	}
+	if state.ScopeFingerprint, err = stringValue(metadata, "bpa.scope_fingerprint"); err != nil {
+		return State{}, err
+	}
+	if state.ApprovedScopeFingerprint, err = stringValue(metadata, "bpa.approved_scope_fingerprint"); err != nil {
+		return State{}, err
+	}
 	return state, nil
 }
 
@@ -130,7 +144,16 @@ func ParseState(metadata map[string]any) (State, error) {
 // remains available, but the explicitly marked production action needs a
 // fresh human approval for the exact plan immediately before dispatch.
 func CanDispatch(state State) DispatchDecision {
-	if state.Template != TemplateProduction || !state.ProductionAction {
+	if state.Template != TemplateProduction {
+		return DispatchDecision{Allowed: true}
+	}
+	if state.ScopeFingerprint != "" {
+		if state.ApprovalStatus == ApprovalApproved && state.ApprovedScopeFingerprint == state.ScopeFingerprint {
+			return DispatchDecision{Allowed: true}
+		}
+		return DispatchDecision{Reason: "потрібне актуальне погодження людини для ticket scope", Err: ErrHumanApprovalRequired}
+	}
+	if !state.ProductionAction {
 		return DispatchDecision{Allowed: true}
 	}
 	if state.PlanFingerprint != "" &&
@@ -142,6 +165,38 @@ func CanDispatch(state State) DispatchDecision {
 		Reason: "потрібне актуальне погодження людини для production дії",
 		Err:    ErrHumanApprovalRequired,
 	}
+}
+
+// HasOpenChildren reports whether a root still has a child that needs an
+// explicit Lead decision. Only done and cancelled children are terminal.
+func HasOpenChildren(statuses []string) bool {
+	for _, status := range statuses {
+		if status != "done" && status != "cancelled" {
+			return true
+		}
+	}
+	return false
+}
+
+// HasCommitEvidence accepts either a local commit made by the delivery agent
+// or an explicit statement that its completed logical unit changed no repo.
+func HasCommitEvidence(metadata map[string]any) bool {
+	for _, key := range []string{"bpa.commit_sha", "bpa.no_repo_changes"} {
+		value, ok := metadata[key].(string)
+		if ok && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// CanWriteArchivistMetadata grants one configured agent a deliberately tiny
+// write surface. Server-owned knowledge keys are never agent-writable.
+func CanWriteArchivistMetadata(key, actorAgentID, archivistAgentID string) bool {
+	if actorAgentID == "" || actorAgentID != archivistAgentID {
+		return false
+	}
+	return key == "bpa.archive_summary" || key == "bpa.archive_updated_at"
 }
 
 func isKnownTemplate(template Template) bool {

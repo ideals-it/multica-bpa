@@ -11,8 +11,10 @@ Team Lead**, with a human gate before any production-impacting action.
 ## Non-goals
 
 - Do not introduce a second workflow engine, event bus, or external scheduler.
-- Do not use JSON messages or mentions in comments as workflow transport.
+- Do not use agent-authored JSON messages or manual peer mentions as workflow
+  transport. Native system handoffs mention and wake the root assignee.
 - Do not replace Multica's issue, run, assignment, or stage primitives.
+- Do not add or alter UI, board columns, or predefined issue statuses.
 - Do not change production infrastructure, IAM, secrets, or deployments.
 - Do not migrate or alter the currently running Multica instance during the
   first implementation phase.
@@ -49,9 +51,9 @@ The fork exposes three small templates:
 
 | Template | Use | Stages |
 | --- | --- | --- |
-| `standard` | ordinary code, documentation, and investigation work | specialist delivery, quality review |
-| `production` | work that may lead to a deploy or production mutation | specialist delivery, quality review, human approval |
-| `investigation` | read-only incident or research work | specialist delivery, optional quality review |
+| `standard` | ordinary code or documentation work | specialist delivery, quality review |
+| `production` | work that may lead to a deploy or production mutation | preparation, Quality, native In Review approval, execution, postflight Quality |
+| `investigation` | read-only incident or research work | investigator evidence, Quality evidence check |
 
 Templates are task-starting constraints, not a general graph language. Each
 template describes allowed stage roles, the required parent owner, and the
@@ -66,7 +68,10 @@ stage handling.
 | Builder | Delivers repository or service changes in one child issue. |
 | n8n Prod | Handles n8n-specific work in one child issue; it never deploys without a human gate. |
 | Documentation Writer | Produces a named documentation artifact in one child issue. |
+| EventCatalog | Owns service, workflow, and event-contract documentation and its verification. |
+| GitHub Ops | Publishes an existing focused commit through push, PR, or merge; it does not implement another agent's change. |
 | Quality | Independently verifies a delivery and either accepts it or returns the named delivery issue for changes. |
+| Archivist | Autonomously reads active and completed native records and maintains a concise root archive; it never routes or executes work. |
 | Human owner | Approves or rejects production-impacting plans. |
 
 Every child has exactly one assignee and one durable result. A review is its
@@ -84,9 +89,10 @@ distinguishes the reason:
 | `in_review` | `bpa.waiting_for=human_approval` | A human decision is required before production work may continue. |
 | `blocked` | `bpa.blocker_owner` and `bpa.blocker_action` | The issue cannot continue until the named owner takes the named action. |
 
-`done` on a child closes a native stage barrier. Multica wakes the Team Lead
-through its existing child-done handler; BPA code never posts a routing
-comment or directly reassigns the parent to simulate that wake.
+`done` on a child closes a native stage barrier. A native system handoff
+mentions and wakes Team Lead once. A child entering `blocked` wakes Team Lead
+immediately without waiting for the barrier. Specialists never route directly
+to one another.
 
 ## Native flow
 
@@ -112,17 +118,17 @@ Production-impacting work includes deploys, production configuration changes,
 production data writes, IAM changes, and secret changes. The fork must enforce
 the following rules in server-side dispatch code:
 
-1. An agent may prepare a production plan and request approval.
-2. Only a human member can approve or reject the current plan.
-3. Approval is bound to a deterministic plan fingerprint; changing the plan
+1. An agent moves the existing root ticket to `in_review` and posts one concise approval request.
+2. Only a human member can approve the current ticket scope with an explicit comment.
+3. Approval is bound to a deterministic title-and-description fingerprint; changing the scope
    invalidates an old approval.
 4. The agent runtime is not dispatched for the gated action until a matching
    human approval exists.
 5. Quality acceptance never substitutes for human production approval.
 
-The initial UI presents the human a short Ukrainian summary: requested action,
-affected environment, expected effect, rollback, and residual risk. It must
-not expose raw agent transcript as the decision surface.
+Team Lead posts a short Ukrainian approval comment: requested action, affected
+environment, expected effect, rollback, and residual risk. The existing board
+and comment UI remain unchanged.
 
 ## Handoffs and comments
 
@@ -149,8 +155,6 @@ New BPA-owned code lives under these paths whenever possible:
 
 ```text
 server/internal/bpa/
-packages/core/bpa-workflow/
-packages/views/bpa-workflow/
 docs/bpa/
 ```
 
@@ -203,8 +207,8 @@ the pilot.
 - Go handler and service tests prove template validation, stage progression
   decisions, approval invalidation, and dispatch denial without a matching
   human approval.
-- TypeScript tests prove API schemas and metadata interpretation.
-- Shared view tests prove concise handoff and waiting-state presentation.
+- Handler tests prove native `In Review` approval comments and protected
+  Archivist metadata writes.
 - One end-to-end local pilot verifies the Lead → agents → Lead path.
 - Upstream sync is validated by focused BPA tests plus the repository checks
   required by each touched layer.

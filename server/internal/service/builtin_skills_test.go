@@ -314,6 +314,31 @@ func TestBPAProductionWorkflowSkillTeachesApprovalBoundaries(t *testing.T) {
 	}
 }
 
+func TestBPAInvestigationWorkflowIsEvidenceOnly(t *testing.T) {
+	skill, ok := findSkill(t, "multica-bpa-investigation-workflow")
+	if !ok {
+		return
+	}
+	_, body, _ := splitFrontmatter(skill.Content)
+	for _, want := range []string{"Lead → Investigator → Quality → Lead", "read-only", "Гіпотези:", "не створює implementation-child"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("investigation workflow skill missing %q", want)
+		}
+	}
+}
+
+func TestBPAArchivistSkillIsReadOnlyAndUsesNativeHistory(t *testing.T) {
+	skill, ok := findSkill(t, "multica-bpa-archivist")
+	if !ok {
+		return
+	}
+	for _, want := range []string{"read-only", "source of truth", "bpa.archive_summary", "Do not create or edit issues"} {
+		if !strings.Contains(skill.Content, want) {
+			t.Fatalf("Archivist skill missing %q", want)
+		}
+	}
+}
+
 func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 	skill, ok := findSkill(t, "multica-skill-importing")
 	if !ok {

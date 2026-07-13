@@ -64,7 +64,7 @@ import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { ExecutionLogSection } from "./execution-log-section";
 import { PullRequestList } from "./pull-request-list";
 import { useGitHubSettings } from "@multica/core/github";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
@@ -99,7 +99,6 @@ import {
   rightSidebarPanelMotionProps,
   useAnimatedRightSidebarState,
 } from "../../layout/animated-right-sidebar";
-import { WorkflowStateNotice } from "../../bpa-workflow/workflow-state-notice";
 
 function SubscriberPopoverContent({
   members,
@@ -868,15 +867,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       const cached = allIssues.find((i) => i.id === id);
       return cached?.description != null ? cached : undefined;
     },
-  });
-  const queryClient = useQueryClient();
-  const approvalDecision = useMutation({
-    mutationFn: (decision: "approved" | "rejected") => api.decideBPAApproval(id, decision),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: issueDetailOptions(wsId, id).queryKey });
-      void queryClient.invalidateQueries({ queryKey: issueListOptions(wsId).queryKey });
-    },
-    onError: () => toast.error("Не вдалося зберегти рішення. Спробуйте ще раз."),
   });
 
   // Record recent visit
@@ -1991,12 +1981,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               const trimmed = value.trim();
               if (trimmed && trimmed !== issue.title) handleUpdateField({ title: trimmed });
             }}
-          />
-
-          <WorkflowStateNotice
-            metadata={issue.metadata ?? {}}
-            onDecision={(decision) => approvalDecision.mutate(decision)}
-            pending={approvalDecision.isPending}
           />
 
           {parentIssue && (

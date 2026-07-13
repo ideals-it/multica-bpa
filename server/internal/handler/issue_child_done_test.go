@@ -342,6 +342,31 @@ func TestChildDoneMentionsParentAssignee_Agent(t *testing.T) {
 	}
 }
 
+func TestChildBlockedWakesParentAssignee_Agent(t *testing.T) {
+	fx := newChildDoneFixture(t, "in_progress")
+	var agentID string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT id FROM agent WHERE workspace_id = $1 AND name = $2`,
+		testWorkspaceID, "Handler Test Agent",
+	).Scan(&agentID); err != nil {
+		t.Fatalf("locate test agent: %v", err)
+	}
+	setIssueAssigneeDirect(t, fx.parent.ID, "agent", agentID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, fx.parent.ID)
+	})
+
+	updateChildStatus(t, fx.child.ID, "blocked")
+
+	content := parentSystemCommentContent(t, fx.parent.ID)
+	if !strings.Contains(content, "Підзадача") || !strings.Contains(content, "заблокована") {
+		t.Fatalf("expected concise blocker handoff, got: %s", content)
+	}
+	if got := countPendingTasksForAgent(t, fx.parent.ID, agentID); got != 1 {
+		t.Fatalf("expected Lead wake task, got %d", got)
+	}
+}
+
 // TestChildDoneSkippedWhenParentMember verifies the MUL-2538 follow-up: a
 // human parent assignee should NOT receive the platform-generated system
 // comment at all. Humans read their own timeline manually; the automated

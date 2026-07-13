@@ -1328,6 +1328,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create comment: "+err.Error())
 		return
 	}
+	if updatedIssue, approvalErr := h.approveBPAReviewComment(r, issue, authorType, req.Content); approvalErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record BPA approval")
+		return
+	} else {
+		issue = updatedIssue
+	}
 
 	// Link uploaded attachments to this comment.
 	if len(attachmentIDs) > 0 {
@@ -1345,6 +1351,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
 		"issue_status":        issue.Status,
 	})
+	h.queueBPAArchivist(r.Context(), issue, "comment_created")
 
 	// A reply in a resolved thread re-opens it. Done after CreateComment commits
 	// so the reply is visible regardless of the unresolve outcome. Shared with

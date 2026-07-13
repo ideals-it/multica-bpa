@@ -63,3 +63,38 @@ Added `multica-bpa-production-workflow`, a Lead-centred contract adapted from
 the Routa Coordinator → implementor → Gate pattern. It keeps native Multica
 stages, requires one concise child handoff, and prevents agents from executing
 a production action before the human decision.
+
+## 2026-07-13 — Native review approval and investigation template
+
+Removed the fork-specific approval card. BPA keeps the existing board and
+statuses: a Production root enters native `In Review`, and a human `Approve` or
+`Погоджую` comment approves the current title-and-description scope. Editing
+that scope resets approval. No production command is approved separately.
+
+Added a read-only Investigation template and explicit routing rules: normal
+child completion wakes Team Lead through native stages; a blocked child wakes
+Team Lead immediately. Specialists do not route work to each other. System
+handoffs and role templates use concise Ukrainian paragraphs.
+
+## 2026-07-13 — Stable Lead routing, commit gate, and autonomous Archivist
+
+Moved the remaining BPA guarantees into server behavior:
+
+- a BPA root cannot close while a child remains open;
+- every completed BPA child records either its focused local commit SHA or a
+  concise `no repo changes` reason;
+- child completion and `blocked` transitions create one native system handoff,
+  mention the root assignee, and wake Team Lead without agent-authored routing
+  comments;
+- the server queues one deduplicated read-only Archivist refresh after material
+  issue, comment, workflow, metadata, and agent-run events;
+- `AT Archivist` is discovered automatically per workspace, while a human may
+  configure another Archivist explicitly;
+- only the configured Archivist can update `bpa.archive_summary` and
+  `bpa.archive_updated_at`; server knowledge and archive records cannot be
+  deleted through the metadata API;
+- Archivist completion output remains in task-run history and is not copied
+  into issue comments, keeping the board discussion free of technical noise.
+
+No UI, board column, predefined status, production service, IAM, secret, or
+deployment behavior was changed.

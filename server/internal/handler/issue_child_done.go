@@ -135,6 +135,28 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 	h.postChildDoneComment(ctx, parent, issue, children, staged, closedStage, false)
 }
 
+// notifyParentOfChildBlocked wakes the root assignee when a child newly becomes
+// blocked. Unlike a completion, a blocker must not wait for a stage barrier:
+// Team Lead needs the decision immediately or the workflow becomes silent.
+func (h *Handler) notifyParentOfChildBlocked(ctx context.Context, prev, issue db.Issue) {
+	if !issue.ParentIssueID.Valid || prev.Status == "blocked" || issue.Status != "blocked" {
+		return
+	}
+	parent, err := h.Queries.GetIssue(ctx, issue.ParentIssueID)
+	if err != nil || parent.Status == "done" || parent.Status == "cancelled" || parent.Status == "backlog" || (parent.AssigneeType.Valid && parent.AssigneeType.String == "member") {
+		return
+	}
+	mentionPrefix := h.buildParentAssigneeMention(ctx, parent)
+	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
+	content := fmt.Sprintf("%sПідзадача [%s-%d](mention://issue/%s) заблокована.\n\nПричина: Team Lead має прийняти рішення щодо «%s».\n\nНаступне: Team Lead перевіряє blocker і визначає наступний крок.", mentionPrefix, prefix, issue.Number, uuidToString(issue.ID), sanitizeChildTitleForSystemComment(issue.Title))
+	comment, err := h.Queries.CreateComment(ctx, db.CreateCommentParams{IssueID: parent.ID, WorkspaceID: parent.WorkspaceID, AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system"})
+	if err != nil {
+		return
+	}
+	h.publish(protocol.EventCommentCreated, uuidToString(parent.WorkspaceID), "system", "", map[string]any{"comment": commentToResponse(comment, nil, nil), "issue_title": parent.Title, "issue_assignee_type": textToPtr(parent.AssigneeType), "issue_assignee_id": uuidToPtr(parent.AssigneeID), "issue_status": parent.Status})
+	h.dispatchParentAssigneeTrigger(ctx, parent, comment)
+}
+
 // notifyParentsOfBatchChildDone emits child-done parent notifications for a
 // whole batch AFTER every status write has committed. `completed` is the set of
 // children that transitioned non-terminal -> terminal during the batch.
