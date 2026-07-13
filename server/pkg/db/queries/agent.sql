@@ -961,6 +961,19 @@ SELECT * FROM agent_task_queue
 WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
 ORDER BY created_at DESC;
 
+-- name: HasCompletedSpecialistSinceTaskStart :one
+-- Returns whether a non-owner specialist completed while the root owner task
+-- was already running. The root handoff hook uses this to schedule exactly one
+-- owner follow-up after that running task completes.
+SELECT EXISTS (
+    SELECT 1
+    FROM agent_task_queue
+    WHERE issue_id = $1
+      AND agent_id <> $2
+      AND status = 'completed'
+      AND completed_at >= $3
+);
+
 -- name: GetWorkspaceAgentRunCounts :many
 -- Total task runs per agent over the trailing 30 days, used by the Agents
 -- list RUNS column. 30-day window keeps the count meaningful (a long-dormant

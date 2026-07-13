@@ -11,7 +11,7 @@ Recheck these references after an upstream merge before changing the skill.
 | Queued work moves an inactive native ticket to `In Progress` while preserving review, done, and blocked states | `server/internal/service/task.go` (`markIssueInProgressAfterQueue`) |
 | Native issue updates preserve the existing board statuses | `server/internal/handler/issue.go` (`UpdateIssue`) |
 | A BPA main ticket cannot reach `Done` before its assigned Lead has posted the required plain-language final summary | `server/internal/handler/bpa_workflow.go` (`validateBPACompletion`) |
-| A completed non-owner specialist task on a root issue queues the assigned Lead after no other specialist remains active | `server/internal/handler/bpa_workflow.go` (`queueRootAssigneeAfterSpecialistCompletion`), called by `server/internal/handler/daemon.go` (`CompleteTask`) |
+| A completed non-owner specialist task on a root issue queues the assigned Lead after no other task remains active; if the Lead was already running, its completion queues one follow-up when a specialist produced newer evidence during that run | `server/internal/handler/bpa_workflow.go` (`queueRootAssigneeAfterSpecialistCompletion`), called by `server/internal/handler/daemon.go` (`CompleteTask`) |
 | `MULTICA_TASK_ID` is available for an agent to bind an artifact link to its own task | `server/internal/daemon/daemon.go` (`agentEnv["MULTICA_TASK_ID"]`) |
 | Desktop artifact links are authorized per task and canonicalized before an OS open/reveal action | `server/internal/handler/daemon.go` (`ResolveTaskLocalArtifact`), `apps/desktop/src/main/local-artifact.ts` (`resolveLocalArtifactPath`) |
 

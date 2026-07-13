@@ -57,6 +57,32 @@ func TestCompleteTaskWaitsForOtherActiveSpecialistBeforeQueueingRootAssignee(t *
 	}
 }
 
+func TestCompleteTaskQueuesRootAssigneeAfterLeadFinishesPendingSpecialistHandoff(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	leadID := createHandlerTestAgent(t, "RootCompletionPendingLead", []byte("[]"))
+	builderID := createHandlerTestAgent(t, "RootCompletionPendingBuilder", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92134, "root-specialist-handoff-during-lead")
+	leadTaskID := insertRunningIssueTask(t, leadID, issueID)
+	builderTaskID := insertRunningIssueTask(t, builderID, issueID)
+
+	if w := completeTaskViaHandler(t, builderTaskID, "specialist evidence arrived while Lead was running"); w.Code != http.StatusOK {
+		t.Fatalf("complete Builder task: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := pendingTaskCountForAgentIssue(t, issueID, leadID); got != 0 {
+		t.Fatalf("queued Lead tasks while original Lead is active = %d, want 0", got)
+	}
+
+	if w := completeTaskViaHandler(t, leadTaskID, "Lead finished its earlier step"); w.Code != http.StatusOK {
+		t.Fatalf("complete original Lead task: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := pendingTaskCountForAgentIssue(t, issueID, leadID); got != 1 {
+		t.Fatalf("queued Lead follow-up after delayed specialist handoff = %d, want 1", got)
+	}
+}
+
 func TestCompleteTaskDoesNotQueueRootAssigneeForOwnOrChildRun(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

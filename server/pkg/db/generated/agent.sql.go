@@ -2534,6 +2534,33 @@ func (q *Queries) HasActiveTaskForIssueAndAgent(ctx context.Context, arg HasActi
 	return has_active, err
 }
 
+const hasCompletedSpecialistSinceTaskStart = `-- name: HasCompletedSpecialistSinceTaskStart :one
+SELECT EXISTS (
+    SELECT 1
+    FROM agent_task_queue
+    WHERE issue_id = $1
+      AND agent_id <> $2
+      AND status = 'completed'
+      AND completed_at >= $3
+)
+`
+
+type HasCompletedSpecialistSinceTaskStartParams struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
+}
+
+// Returns whether a non-owner specialist completed while the root owner task
+// was already running. The root handoff hook uses this to schedule exactly one
+// owner follow-up after that running task completes.
+func (q *Queries) HasCompletedSpecialistSinceTaskStart(ctx context.Context, arg HasCompletedSpecialistSinceTaskStartParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasCompletedSpecialistSinceTaskStart, arg.IssueID, arg.AgentID, arg.CompletedAt)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasPendingTaskForIssue = `-- name: HasPendingTaskForIssue :one
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE issue_id = $1 AND status IN ('queued', 'dispatched')

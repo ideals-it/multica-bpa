@@ -296,9 +296,10 @@ func (h *Handler) queueBPAArchivistAfterTaskCompletion(ctx context.Context, task
 // of BPA metadata and comment mention syntax, because a Lead can delegate on a
 // normal issue as well as on a BPA template.
 //
-// A task completion retry is harmless while the queued owner task is active:
-// ListActiveTasksByIssue sees it and returns before enqueueing. Once a Lead
-// has processed the handoff, a daemon should not replay the old completion.
+// When a specialist completes while the Lead is already running, no concurrent
+// Lead task is created. Instead, the Lead's own completion checks whether a
+// specialist produced newer evidence during that run and schedules one
+// follow-up after the active-task barrier is clear.
 func (h *Handler) queueRootAssigneeAfterSpecialistCompletion(ctx context.Context, task db.AgentTaskQueue) {
 	if !task.IssueID.Valid {
 		return
@@ -307,7 +308,7 @@ func (h *Handler) queueRootAssigneeAfterSpecialistCompletion(ctx context.Context
 	if err != nil || issue.ParentIssueID.Valid || issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
 		return
 	}
-	if issue.Status == "done" || issue.Status == "cancelled" || task.AgentID == issue.AssigneeID {
+	if issue.Status == "done" || issue.Status == "cancelled" {
 		return
 	}
 
@@ -316,11 +317,28 @@ func (h *Handler) queueRootAssigneeAfterSpecialistCompletion(ctx context.Context
 		slog.Warn("root handoff: list active tasks failed", "issue_id", uuidToString(issue.ID), "error", err)
 		return
 	}
-	for _, activeTask := range active {
+	if len(active) > 0 {
 		// A still-active specialist means the Lead must wait for all evidence.
 		// An active Lead already owns the next step, so a duplicate queue would
 		// be both noisy and potentially concurrent.
-		if activeTask.AgentID != task.AgentID {
+		return
+	}
+
+	if task.AgentID == issue.AssigneeID {
+		if !task.StartedAt.Valid {
+			return
+		}
+		hasNewSpecialistResult, err := h.Queries.HasCompletedSpecialistSinceTaskStart(ctx, db.HasCompletedSpecialistSinceTaskStartParams{
+			IssueID:     issue.ID,
+			AgentID:     issue.AssigneeID,
+			CompletedAt: task.StartedAt,
+		})
+		if err != nil {
+			slog.Warn("root handoff: check specialist completion after Lead start failed",
+				"issue_id", uuidToString(issue.ID), "task_id", uuidToString(task.ID), "error", err)
+			return
+		}
+		if !hasNewSpecialistResult {
 			return
 		}
 	}

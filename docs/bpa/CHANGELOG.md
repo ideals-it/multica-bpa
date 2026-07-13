@@ -1,5 +1,17 @@
 # BPA fork changelog
 
+## 2026-07-13 — Lead wake-up after concurrent specialist result
+
+Fixed a root-ticket race where a specialist could finish while the assigned
+Lead was already running. The server still avoids concurrent duplicate Lead
+tasks, but when that Lead completes it now checks for specialist evidence that
+arrived during its run and queues one normal Lead follow-up. This prevents a
+ticket from remaining `In Progress` without a next agent after a valid handoff.
+
+Verified with a focused live-PostgreSQL handler regression test and a local
+backend health check. No UI, board, predefined status, production service,
+IAM, secret, or remote deployment behavior changed.
+
 ## 2026-07-13 — Plain agent mentions
 
 Removed bold formatting around actionable agent mentions in the Standard,
