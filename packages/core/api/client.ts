@@ -2,6 +2,8 @@ import type {
   Issue,
   CreateIssueRequest,
   UpdateIssueRequest,
+  BPAWorkflowResponse,
+  BPAApprovalDecision,
   GroupedIssuesResponse,
   ListIssuesResponse,
   SearchIssuesResponse,
@@ -609,6 +611,17 @@ export class ApiClient {
 
   async getIssue(id: string): Promise<Issue> {
     return this.fetch(`/api/issues/${id}`);
+  }
+
+  async getBPAWorkflow(id: string): Promise<BPAWorkflowResponse> {
+    return this.fetch(`/api/issues/${id}/bpa/workflow`);
+  }
+
+  async decideBPAApproval(id: string, decision: BPAApprovalDecision): Promise<BPAWorkflowResponse> {
+    return this.fetch(`/api/issues/${id}/bpa/approval-decision`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
   }
 
   async createIssue(data: CreateIssueRequest): Promise<Issue> {

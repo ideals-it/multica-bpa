@@ -52,3 +52,14 @@ Added local BPA endpoints to start a template, request an approval, read its
 state, and record a human decision. Direct assignment, mention-triggered work,
 and rerun now check the same fail-closed policy before creating or cancelling a
 task. No production action was dispatched.
+
+## 2026-07-13 — Human approval card and role contract
+
+Added a small issue-detail card for a pending production decision. It shows
+only the Lead's short Ukrainian summary and explicit `Погодити` / `Відхилити`
+actions; plan fingerprints and raw workflow metadata stay hidden.
+
+Added `multica-bpa-production-workflow`, a Lead-centred contract adapted from
+the Routa Coordinator → implementor → Gate pattern. It keeps native Multica
+stages, requires one concise child handoff, and prevents agents from executing
+a production action before the human decision.

@@ -291,6 +291,29 @@ func TestBPAStandardWorkflowSkillTeachesLeadCenteredStages(t *testing.T) {
 	}
 }
 
+func TestBPAProductionWorkflowSkillTeachesApprovalBoundaries(t *testing.T) {
+	skill, ok := findSkill(t, "multica-bpa-production-workflow")
+	if !ok {
+		return
+	}
+	_, body, _ := splitFrontmatter(skill.Content)
+	mustContain := []string{
+		"Lead → specialist → Quality → Lead",
+		"Потрібне погодження",
+		"не виконує production-дію",
+		"один короткий коментар",
+		"references/production-workflow-source-map.md",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("BPA production workflow skill missing %q", want)
+		}
+	}
+	if !skillHasFile(skill, "references/production-workflow-source-map.md") {
+		t.Error("BPA production workflow skill is missing its source map")
+	}
+}
+
 func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 	skill, ok := findSkill(t, "multica-skill-importing")
 	if !ok {

@@ -47,6 +47,24 @@ export interface UpdateIssueRequest {
   handoff_note?: string;
 }
 
+export type BPAApprovalDecision = "approved" | "rejected";
+
+export interface BPAWorkflowState {
+  template: "standard" | "production" | "investigation" | "";
+  waiting_for: string;
+  production_action: boolean;
+  plan_fingerprint: string;
+  approval_fingerprint: string;
+  approval_status: "" | "pending" | BPAApprovalDecision;
+  approval_summary: string;
+  blocker: string;
+}
+
+export interface BPAWorkflowResponse {
+  state: BPAWorkflowState;
+  metadata: IssueMetadata;
+}
+
 /** Inputs to `POST /api/issues/preview-trigger`. A nil prospective field means
  *  "leave unchanged"; `isCreate` previews a not-yet-persisted issue. */
 export interface IssueTriggerPreviewParams {
