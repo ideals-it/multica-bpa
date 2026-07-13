@@ -315,6 +315,23 @@ ORDER BY runtime_retry_after ASC, id ASC
 LIMIT 1
 FOR UPDATE SKIP LOCKED;
 
+-- name: ClaimDueAutopilotRunForRuntimeRetryForRuntime :one
+-- Runtime-online recovery must only claim work routed to the runtime that
+-- emitted the heartbeat. Squad autopilots resolve through their leader.
+SELECT r.*
+FROM autopilot_run r
+JOIN autopilot a ON a.id = r.autopilot_id
+LEFT JOIN agent direct_agent ON a.assignee_type = 'agent' AND direct_agent.id = a.assignee_id
+LEFT JOIN squad s ON a.assignee_type = 'squad' AND s.id = a.assignee_id
+LEFT JOIN agent squad_leader ON s.leader_id = squad_leader.id
+WHERE r.status = 'pending'
+  AND r.runtime_retry_after IS NOT NULL
+  AND r.runtime_retry_after <= now()
+  AND COALESCE(direct_agent.runtime_id, squad_leader.runtime_id) = $1
+ORDER BY r.runtime_retry_after ASC, r.id ASC
+LIMIT 1
+FOR UPDATE OF r SKIP LOCKED;
+
 -- name: ReleaseAutopilotRunRuntimeRetryClaim :one
 -- A claimed retry whose runtime is still unavailable remains pending and is
 -- rescheduled atomically before the caller commits its row lock.

@@ -156,6 +156,50 @@ func (q *Queries) ClaimDueAutopilotRunForRuntimeRetry(ctx context.Context) (Auto
 	return i, err
 }
 
+const claimDueAutopilotRunForRuntimeRetryForRuntime = `-- name: ClaimDueAutopilotRunForRuntimeRetryForRuntime :one
+SELECT r.id, r.autopilot_id, r.trigger_id, r.source, r.status, r.issue_id, r.task_id, r.triggered_at, r.completed_at, r.failure_reason, r.trigger_payload, r.result, r.created_at, r.squad_id, r.planned_at, r.runtime_retry_attempt, r.runtime_retry_after, r.runtime_retry_reason
+FROM autopilot_run r
+JOIN autopilot a ON a.id = r.autopilot_id
+LEFT JOIN agent direct_agent ON a.assignee_type = 'agent' AND direct_agent.id = a.assignee_id
+LEFT JOIN squad s ON a.assignee_type = 'squad' AND s.id = a.assignee_id
+LEFT JOIN agent squad_leader ON s.leader_id = squad_leader.id
+WHERE r.status = 'pending'
+  AND r.runtime_retry_after IS NOT NULL
+  AND r.runtime_retry_after <= now()
+  AND COALESCE(direct_agent.runtime_id, squad_leader.runtime_id) = $1
+ORDER BY r.runtime_retry_after ASC, r.id ASC
+LIMIT 1
+FOR UPDATE OF r SKIP LOCKED
+`
+
+// Runtime-online recovery must only claim work routed to the runtime that
+// emitted the heartbeat. Squad autopilots resolve through their leader.
+func (q *Queries) ClaimDueAutopilotRunForRuntimeRetryForRuntime(ctx context.Context, runtimeID pgtype.UUID) (AutopilotRun, error) {
+	row := q.db.QueryRow(ctx, claimDueAutopilotRunForRuntimeRetryForRuntime, runtimeID)
+	var i AutopilotRun
+	err := row.Scan(
+		&i.ID,
+		&i.AutopilotID,
+		&i.TriggerID,
+		&i.Source,
+		&i.Status,
+		&i.IssueID,
+		&i.TaskID,
+		&i.TriggeredAt,
+		&i.CompletedAt,
+		&i.FailureReason,
+		&i.TriggerPayload,
+		&i.Result,
+		&i.CreatedAt,
+		&i.SquadID,
+		&i.PlannedAt,
+		&i.RuntimeRetryAttempt,
+		&i.RuntimeRetryAfter,
+		&i.RuntimeRetryReason,
+	)
+	return i, err
+}
+
 const createAutopilot = `-- name: CreateAutopilot :one
 INSERT INTO autopilot (
     workspace_id, title, description, assignee_type, assignee_id,

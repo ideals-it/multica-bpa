@@ -331,27 +331,37 @@ func (s *AutopilotService) recordDeferredRuntimeRetry(
 // filtering is intentionally deferred to the runtime-online listener task;
 // this service method is safe to call more than once because each occurrence
 // is claimed with SKIP LOCKED and changes out of pending before task creation.
-func (s *AutopilotService) RecoverRuntimeDeferredRuns(ctx context.Context, _ pgtype.UUID) error {
-	return s.RecoverDueRuntimeDeferredRuns(ctx)
-}
-
-func (s *AutopilotService) RecoverDueRuntimeDeferredRuns(ctx context.Context) error {
+func (s *AutopilotService) RecoverRuntimeDeferredRuns(ctx context.Context, runtimeID pgtype.UUID) error {
 	for {
-		more, err := s.recoverOneDeferredRuntimeRun(ctx)
+		more, err := s.recoverOneDeferredRuntimeRun(ctx, runtimeID)
 		if err != nil || !more {
 			return err
 		}
 	}
 }
 
-func (s *AutopilotService) recoverOneDeferredRuntimeRun(ctx context.Context) (bool, error) {
+func (s *AutopilotService) RecoverDueRuntimeDeferredRuns(ctx context.Context) error {
+	for {
+		more, err := s.recoverOneDeferredRuntimeRun(ctx, pgtype.UUID{})
+		if err != nil || !more {
+			return err
+		}
+	}
+}
+
+func (s *AutopilotService) recoverOneDeferredRuntimeRun(ctx context.Context, runtimeID pgtype.UUID) (bool, error) {
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("begin runtime retry transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
-	run, err := qtx.ClaimDueAutopilotRunForRuntimeRetry(ctx)
+	var run db.AutopilotRun
+	if runtimeID.Valid {
+		run, err = qtx.ClaimDueAutopilotRunForRuntimeRetryForRuntime(ctx, runtimeID)
+	} else {
+		run, err = qtx.ClaimDueAutopilotRunForRuntimeRetry(ctx)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, tx.Commit(ctx)
 	}
