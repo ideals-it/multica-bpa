@@ -217,9 +217,10 @@ func (h *Handler) validateBPAFinalRootSummary(ctx context.Context, issue db.Issu
 	return nil
 }
 
-// queueBPAArchivist schedules one read-only Archivist refresh for a BPA root.
-// The task reads live issue state, so an existing pending run already covers
-// later events and the native active-task unique index provides deduplication.
+// queueBPAArchivist records server-owned knowledge markers for a BPA root.
+// The detailed Archivist summary is deliberately on-demand: automatically
+// dispatching an AI run made archival contend for the shared local directory
+// and added no delivery value. This function therefore never creates a task.
 func (h *Handler) queueBPAArchivist(ctx context.Context, issue db.Issue, event string) {
 	issue, enabled, err := h.bpaRoot(ctx, issue)
 	if err != nil || !enabled {
@@ -230,7 +231,7 @@ func (h *Handler) queueBPAArchivist(ctx context.Context, issue db.Issue, event s
 	if err != nil {
 		return
 	}
-	issue, archivistID, ok := h.resolveBPAArchivist(ctx, issue, metadata)
+	issue, _, ok := h.resolveBPAArchivist(ctx, issue, metadata)
 	if !ok {
 		return
 	}
@@ -247,36 +248,6 @@ func (h *Handler) queueBPAArchivist(ctx context.Context, issue db.Issue, event s
 			issue = updated
 		}
 	}
-	if h.hasActiveBPADeliveryTask(ctx, issue.ID, archivistID) {
-		return
-	}
-	if h.hasActiveTaskForIssueAndAgent(ctx, issue.ID, archivistID) {
-		return
-	}
-	if _, err := h.TaskService.EnqueueTaskForBPAArchivist(ctx, issue, archivistID); err != nil {
-		slog.Debug("BPA Archivist enqueue skipped", "issue_id", uuidToString(issue.ID), "error", err)
-	}
-}
-
-// hasActiveBPADeliveryTask keeps read-only archive work from competing for a
-// local project directory while Lead or a specialist is still delivering the
-// current ticket. A later completion event will enqueue the Archivist once the
-// delivery chain becomes idle.
-func (h *Handler) hasActiveBPADeliveryTask(ctx context.Context, issueID, archivistID pgtype.UUID) bool {
-	tasks, err := h.Queries.ListTasksByIssue(ctx, issueID)
-	if err != nil {
-		return true
-	}
-	for _, task := range tasks {
-		if task.AgentID == archivistID {
-			continue
-		}
-		switch task.Status {
-		case "queued", "dispatched", "running", "waiting_local_directory":
-			return true
-		}
-	}
-	return false
 }
 
 // resolveBPAArchivist prefers an explicit human-configured agent ID. When it

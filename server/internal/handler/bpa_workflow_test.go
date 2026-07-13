@@ -590,7 +590,7 @@ func TestConfiguredArchivistCannotCreateIssueComment(t *testing.T) {
 	}
 }
 
-func TestQueueBPAArchivistDeduplicatesPendingRuns(t *testing.T) {
+func TestQueueBPAArchivistRecordsKnowledgeWithoutCreatingRun(t *testing.T) {
 	ctx := context.Background()
 	issueID := createMetadataTestIssue(t, "BPA Archivist queue dedupe")
 	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
@@ -618,8 +618,8 @@ func TestQueueBPAArchivistDeduplicatesPendingRuns(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued','dispatched','running','waiting_local_directory')`, issue.ID, agentID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("pending Archivist runs = %d, want 1", count)
+	if count != 0 {
+		t.Fatalf("background Archivist must not create a runtime task, got %d run(s)", count)
 	}
 	updated, err := testHandler.Queries.GetIssue(ctx, issue.ID)
 	if err != nil {
@@ -694,7 +694,7 @@ func TestQueueBPAArchivistWaitsForProductionApproval(t *testing.T) {
 	}
 }
 
-func TestQueueBPAArchivistAfterNonArchivistTaskCompletion(t *testing.T) {
+func TestQueueBPAArchivistAfterTaskCompletionRecordsKnowledgeWithoutRun(t *testing.T) {
 	ctx := context.Background()
 	issueID := createMetadataTestIssue(t, "BPA Archivist task completion")
 	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
@@ -716,8 +716,8 @@ func TestQueueBPAArchivistAfterNonArchivistTaskCompletion(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued','dispatched','running','waiting_local_directory')`, issue.ID, archivistID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("Archivist runs after worker completion = %d, want 1", count)
+	if count != 0 {
+		t.Fatalf("task completion must not create an Archivist runtime task, got %d", count)
 	}
 
 	if _, err := testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issue.ID); err != nil {
@@ -765,7 +765,7 @@ func TestArchivistCompletionDoesNotWakeRootLead(t *testing.T) {
 	}
 }
 
-func TestQueueBPAArchivistDiscoversNamedWorkspaceAgent(t *testing.T) {
+func TestQueueBPAArchivistDiscoversNamedWorkspaceAgentWithoutRun(t *testing.T) {
 	ctx := context.Background()
 	archivistID := createHandlerTestAgent(t, "AT Archivist", nil)
 	issueID := createMetadataTestIssue(t, "BPA Archivist automatic discovery")
@@ -794,8 +794,8 @@ func TestQueueBPAArchivistDiscoversNamedWorkspaceAgent(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, issue.ID, archivistID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("automatically discovered Archivist runs = %d, want 1", count)
+	if count != 0 {
+		t.Fatalf("automatically discovered Archivist must not run, got %d", count)
 	}
 }
 

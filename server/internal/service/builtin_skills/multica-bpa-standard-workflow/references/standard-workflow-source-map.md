@@ -7,7 +7,7 @@ Recheck these references after an upstream merge before changing the skill.
 | --- | --- |
 | An explicit `mention://agent/...` in an issue comment resolves to a runnable agent task on that same issue | `server/internal/handler/comment.go` (`computeCommentAgentTriggers`, `enqueueSingleCommentTrigger`) |
 | A task-scoped specialist result on an agent-owned root with no explicit next-owner mention gets one compact handoff mention to the assigned Lead, even before a BPA template starts | `server/internal/handler/comment.go` (`ensureBPAWorkerHandoffMention`) |
-| Archivist yields its local-runtime work while Lead or a specialist has active delivery work on the same BPA root, and Archivist completion never wakes Lead | `server/internal/handler/bpa_workflow.go` (`queueBPAArchivist`, `hasActiveBPADeliveryTask`, `queueRootAssigneeAfterSpecialistCompletion`) |
+| BPA events write lightweight server-owned knowledge markers only; automatic archival never creates an Archivist runtime task, occupies a local directory, or wakes Lead | `server/internal/handler/bpa_workflow.go` (`queueBPAArchivist`, `queueRootAssigneeAfterSpecialistCompletion`) |
 | Different agents may have tasks on one issue while one agent remains serialized with itself | `server/pkg/db/queries/agent.sql` (`ClaimAgentTask`) |
 | Direct assignment, mention, and rerun share BPA production gating | `server/internal/service/task.go` (`CanEnqueueIssue`) |
 | Queued work moves an inactive native ticket to `In Progress` while preserving review, done, and blocked states | `server/internal/service/task.go` (`markIssueInProgressAfterQueue`) |

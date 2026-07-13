@@ -1,5 +1,15 @@
 # BPA fork changelog
 
+## 2026-07-13 — Archivist is fully background
+
+Automatic BPA events now update only small server-owned knowledge markers. They
+never queue an Archivist AI run, use a local runtime/directory, change a ticket
+status, or wake Team Lead. A detailed archive summary remains available only
+when Archivist is explicitly assigned or mentioned for that purpose.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-13 — Archivist yields to delivery and cannot wake Lead
 
 Archivist no longer queues or occupies the shared local project directory while

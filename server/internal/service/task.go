@@ -902,13 +902,6 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, pgtype.UUID{}, false, "")
 }
 
-// EnqueueTaskForBPAArchivist keeps the normal BPA dispatch gate intact. The
-// Archivist is read-only, but it is still an agent run and must never bypass a
-// Production ticket's native human approval.
-func (s *TaskService) EnqueueTaskForBPAArchivist(ctx context.Context, issue db.Issue, agentID pgtype.UUID) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTask(ctx, issue, agentID, pgtype.UUID{}, false, pgtype.UUID{}, false, "")
-}
-
 // EnqueueTaskForThreadParent creates a queued task for the agent who authored
 // the direct parent comment a member replied to.
 func (s *TaskService) EnqueueTaskForThreadParent(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID) (db.AgentTaskQueue, error) {
