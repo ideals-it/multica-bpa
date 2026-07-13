@@ -1361,6 +1361,10 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 }
 
 func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
+	if err := h.validateBPACompletion(ctx, issue); err != nil {
+		slog.Warn("github: BPA completion blocked", "issue_id", uuidToString(issue.ID), "err", err)
+		return
+	}
 	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
 		ID:          issue.ID,
 		Status:      "done",

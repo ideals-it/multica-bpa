@@ -48,6 +48,9 @@ func TestBPAArchivistMetadataWriteBoundary(t *testing.T) {
 	if w := set("bpa.archivist_agent_id", `"`+archivistID+`"`, archivistID); w.Code != http.StatusForbidden {
 		t.Fatalf("agent self-election as Archivist: expected 403, got %d: %s", w.Code, w.Body.String())
 	}
+	if w := set("bpa.approval_status", `"approved"`, archivistID); w.Code != http.StatusForbidden {
+		t.Fatalf("agent workflow approval write: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
 	if w := set("bpa.archive_summary", `"Стан: у роботі"`, archivistID); w.Code != http.StatusOK {
 		t.Fatalf("configured Archivist archive write: expected 200, got %d: %s", w.Code, w.Body.String())
 	}

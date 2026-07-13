@@ -140,31 +140,19 @@ func ParseState(metadata map[string]any) (State, error) {
 	return state, nil
 }
 
-// CanDispatch is the gh-aw-inspired fail-closed policy: ordinary preparation
-// remains available, but the explicitly marked production action needs a
-// fresh human approval for the exact plan immediately before dispatch.
+// CanDispatch allows production execution only after native review records a
+// human approval for the current ticket scope.
 func CanDispatch(state State) DispatchDecision {
 	if state.Template != TemplateProduction {
 		return DispatchDecision{Allowed: true}
 	}
-	if state.ScopeFingerprint != "" {
-		if state.ApprovalStatus == ApprovalApproved && state.ApprovedScopeFingerprint == state.ScopeFingerprint {
-			return DispatchDecision{Allowed: true}
-		}
+	if state.ScopeFingerprint == "" {
 		return DispatchDecision{Reason: "потрібне актуальне погодження людини для ticket scope", Err: ErrHumanApprovalRequired}
 	}
-	if !state.ProductionAction {
+	if state.ApprovalStatus == ApprovalApproved && state.ApprovedScopeFingerprint == state.ScopeFingerprint {
 		return DispatchDecision{Allowed: true}
 	}
-	if state.PlanFingerprint != "" &&
-		state.ApprovalStatus == ApprovalApproved &&
-		state.ApprovalFingerprint == state.PlanFingerprint {
-		return DispatchDecision{Allowed: true}
-	}
-	return DispatchDecision{
-		Reason: "потрібне актуальне погодження людини для production дії",
-		Err:    ErrHumanApprovalRequired,
-	}
+	return DispatchDecision{Reason: "потрібне актуальне погодження людини для ticket scope", Err: ErrHumanApprovalRequired}
 }
 
 // HasOpenChildren reports whether a root still has a child that needs an

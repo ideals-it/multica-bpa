@@ -2583,24 +2583,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Status != nil && *req.Status == "done" && prevIssue.Status != "done" {
-		hasCommitEvidence, evidenceErr := h.bpaChildHasCommitEvidence(r.Context(), prevIssue)
-		if evidenceErr != nil {
-			slog.Warn("check BPA child commit evidence failed", append(logger.RequestAttrs(r), "error", evidenceErr, "issue_id", id)...)
-			writeError(w, http.StatusInternalServerError, "failed to check BPA child commit evidence")
-			return
-		}
-		if !hasCommitEvidence {
-			writeError(w, http.StatusConflict, "BPA child needs a commit SHA or explicit no repo changes reason before completion")
-			return
-		}
-		hasOpenChildren, guardErr := h.bpaRootHasOpenChildren(r.Context(), prevIssue)
-		if guardErr != nil {
-			slog.Warn("check BPA root fan-in failed", append(logger.RequestAttrs(r), "error", guardErr, "issue_id", id)...)
-			writeError(w, http.StatusInternalServerError, "failed to check BPA child tasks")
-			return
-		}
-		if hasOpenChildren {
-			writeError(w, http.StatusConflict, "BPA main task cannot be closed while child tasks are still open")
+		if err := h.validateBPACompletion(r.Context(), prevIssue); err != nil {
+			slog.Warn("validate BPA completion failed", append(logger.RequestAttrs(r), "error", err, "issue_id", id)...)
+			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
 	}
@@ -3165,6 +3150,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		_, batchTouchedID := rawUpdates["assignee_id"]
 		if batchTouchedType || batchTouchedID {
 			if status, _ := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
+				continue
+			}
+		}
+		if req.Updates.Status != nil && *req.Updates.Status == "done" && prevIssue.Status != "done" {
+			if err := h.validateBPACompletion(r.Context(), prevIssue); err != nil {
 				continue
 			}
 		}

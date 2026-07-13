@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/bpa"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -165,18 +166,26 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
-	if key == "bpa.archivist_agent_id" && actorType != "member" {
-		writeError(w, http.StatusForbidden, "only a human member can configure the BPA Archivist")
-		return
-	}
-	if strings.HasPrefix(key, "bpa.knowledge_") {
-		writeError(w, http.StatusForbidden, "BPA knowledge metadata is server-managed")
-		return
-	}
-	if key == "bpa.archive_summary" || key == "bpa.archive_updated_at" {
-		archivistID, _ := parseIssueMetadata(issue.Metadata)["bpa.archivist_agent_id"].(string)
-		if actorType != "agent" || !bpa.CanWriteArchivistMetadata(key, actorID, archivistID) {
-			writeError(w, http.StatusForbidden, "only the configured BPA Archivist can write archive metadata")
+	if strings.HasPrefix(key, "bpa.") {
+		switch key {
+		case "bpa.archivist_agent_id":
+			if actorType != "member" {
+				writeError(w, http.StatusForbidden, "only a human member can configure the BPA Archivist")
+				return
+			}
+		case "bpa.archive_summary", "bpa.archive_updated_at":
+			archivistID, _ := parseIssueMetadata(issue.Metadata)["bpa.archivist_agent_id"].(string)
+			if actorType != "agent" || !bpa.CanWriteArchivistMetadata(key, actorID, archivistID) {
+				writeError(w, http.StatusForbidden, "only the configured BPA Archivist can write archive metadata")
+				return
+			}
+		case "bpa.commit_sha", "bpa.no_repo_changes":
+			if actorType != "agent" || !h.canAgentWriteBPAChildEvidence(r, issue, actorID) {
+				writeError(w, http.StatusForbidden, "only the assigned BPA child agent can record completion evidence")
+				return
+			}
+		default:
+			writeError(w, http.StatusForbidden, "BPA workflow metadata is server-managed")
 			return
 		}
 	}
@@ -218,6 +227,29 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"metadata": metadata})
 }
 
+func (h *Handler) canAgentWriteBPAChildEvidence(r *http.Request, issue db.Issue, agentID string) bool {
+	if !issue.ParentIssueID.Valid {
+		return false
+	}
+	parent, err := h.Queries.GetIssue(r.Context(), issue.ParentIssueID)
+	if err != nil {
+		return false
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(parent.Metadata))
+	if err != nil || !state.Enabled() {
+		return false
+	}
+	if issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" && uuidToString(issue.AssigneeID) == agentID {
+		return true
+	}
+	taskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
+	if err != nil {
+		return false
+	}
+	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
+	return err == nil && task.IssueID.Valid && task.IssueID == issue.ID && uuidToString(task.AgentID) == agentID
+}
+
 func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 	issueID := chi.URLParam(r, "id")
 	key := chi.URLParam(r, "key")
@@ -234,8 +266,8 @@ func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if strings.HasPrefix(key, "bpa.knowledge_") || key == "bpa.archive_summary" || key == "bpa.archive_updated_at" {
-		writeError(w, http.StatusForbidden, "BPA knowledge and archive metadata cannot be deleted")
+	if strings.HasPrefix(key, "bpa.") {
+		writeError(w, http.StatusForbidden, "BPA metadata cannot be deleted through the generic API")
 		return
 	}
 

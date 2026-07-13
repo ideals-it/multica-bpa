@@ -74,6 +74,12 @@ func (s *TaskService) CanEnqueueIssue(issue db.Issue) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", bpa.ErrHumanApprovalRequired, err)
 	}
+	// Before approval, only the root Team Lead coordination task may run to
+	// prepare the plan. Production children are execution work and are blocked.
+	if state.Template == bpa.TemplateProduction && !issue.ParentIssueID.Valid &&
+		state.ScopeFingerprint == "" && state.WaitingFor == bpa.WaitingForLead {
+		return nil
+	}
 	if decision := bpa.CanDispatch(state); !decision.Allowed {
 		return decision.Err
 	}

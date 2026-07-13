@@ -98,3 +98,23 @@ Moved the remaining BPA guarantees into server behavior:
 
 No UI, board column, predefined status, production service, IAM, secret, or
 deployment behavior was changed.
+
+## 2026-07-13 — Independent review hardening
+
+Closed the server-side bypasses found by an independent review:
+
+- removed legacy BPA approval API routes and the legacy plan-fingerprint
+  dispatch path; only native `In Review` plus a human approval comment can
+  approve a Production ticket scope;
+- production children cannot dispatch before that ticket-scope approval; the
+  root Lead remains able to prepare the plan;
+- generic metadata cannot write or delete BPA workflow state; only an assigned
+  BPA child agent may record commit evidence, and only Archivist may update its
+  two archive keys;
+- one completion guard now covers direct issue updates, batch updates, and
+  GitHub merge completion;
+- the configured Archivist cannot create issue comments.
+
+The stage barrier remains intentional: parallel child completion wakes Lead
+when its stage closes, while a `blocked` child wakes Lead immediately. No UI,
+board/status, production, IAM, secret, or deployment behavior changed.

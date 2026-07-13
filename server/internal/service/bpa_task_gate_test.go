@@ -22,13 +22,12 @@ func TestCanEnqueueIssueRejectsUnapprovedProductionAction(t *testing.T) {
 	}
 }
 
-func TestCanEnqueueIssueAllowsApprovedProductionAction(t *testing.T) {
+func TestCanEnqueueIssueAllowsApprovedProductionTicketScope(t *testing.T) {
 	service := &TaskService{}
 	issue := db.Issue{Metadata: []byte(`{
 		"bpa.template":"production",
-		"bpa.production_action":true,
-		"bpa.plan_fingerprint":"plan-a",
-		"bpa.approval_fingerprint":"plan-a",
+		"bpa.scope_fingerprint":"scope-a",
+		"bpa.approved_scope_fingerprint":"scope-a",
 		"bpa.approval_status":"approved"
 	}`), ID: pgtype.UUID{Valid: true}}
 
@@ -42,11 +41,22 @@ func TestCanEnqueueIssueAllowsPreparationAndStandardWork(t *testing.T) {
 	for _, metadata := range [][]byte{
 		nil,
 		[]byte(`{"bpa.template":"standard"}`),
-		[]byte(`{"bpa.template":"production","bpa.production_action":false}`),
+		[]byte(`{"bpa.template":"production","bpa.waiting_for":"lead"}`),
 	} {
 		if err := service.CanEnqueueIssue(db.Issue{Metadata: metadata}); err != nil {
 			t.Fatalf("expected allowed dispatch for %s, got %v", metadata, err)
 		}
+	}
+}
+
+func TestCanEnqueueIssueRejectsProductionChildBeforeScopedApproval(t *testing.T) {
+	service := &TaskService{}
+	issue := db.Issue{
+		ParentIssueID: pgtype.UUID{Valid: true},
+		Metadata:      []byte(`{"bpa.template":"production"}`),
+	}
+	if err := service.CanEnqueueIssue(issue); !errors.Is(err, bpa.ErrHumanApprovalRequired) {
+		t.Fatalf("production child must wait for ticket-scope approval, got %v", err)
 	}
 }
 

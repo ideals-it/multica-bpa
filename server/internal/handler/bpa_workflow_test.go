@@ -24,19 +24,6 @@ func TestStartBPAWorkflowRejectsMainIssueWithoutAgentLead(t *testing.T) {
 	}
 }
 
-func TestDecideBPAApprovalRejectsAgentActor(t *testing.T) {
-	issueID := createMetadataTestIssue(t, "approval actor")
-	w := httptest.NewRecorder()
-	req := newRequest("POST", "/api/issues/"+issueID+"/bpa/approval-decision", ApprovalDecisionRequest{Decision: "approved"})
-	req = withURLParam(req, "id", issueID)
-	req.Header.Set("X-Actor-Source", "task_token")
-	req.Header.Set("X-Agent-ID", "00000000-0000-0000-0000-000000000001")
-	testHandler.DecideBPAApproval(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
 func TestApproveCommentApprovesCurrentTicketScope(t *testing.T) {
 	issueID := createMetadataTestIssue(t, "scope approval")
 	ctx := context.Background()
@@ -141,6 +128,118 @@ func TestBPAChildCannotCloseWithoutCommitEvidence(t *testing.T) {
 	testHandler.UpdateIssue(w, update)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestBatchUpdateCannotCloseBPAChildWithoutCommitEvidence(t *testing.T) {
+	ctx := context.Background()
+	parentID := createMetadataTestIssue(t, "BPA batch child requires commit evidence")
+	parent, err := testHandler.Queries.GetIssue(ctx, parseUUID(parentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := newRequest("POST", "/api/issues/"+parentID+"/bpa/template", nil)
+	if _, err := testHandler.setBPAWorkflowValues(req, parent, map[string]any{"bpa.template": "standard"}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	createChild := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           "BPA batch child without evidence " + time.Now().Format(time.RFC3339Nano),
+		"status":          "in_progress",
+		"parent_issue_id": parentID,
+	})
+	testHandler.CreateIssue(w, createChild)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create child: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var child IssueResponse
+	if err := json.NewDecoder(w.Body).Decode(&child); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, child.ID) })
+
+	w = httptest.NewRecorder()
+	batch := newRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{child.ID},
+		"updates":   map[string]any{"status": "done"},
+	})
+	testHandler.BatchUpdateIssues(w, batch)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result struct {
+		Updated int `json:"updated"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Updated != 0 {
+		t.Fatalf("batch must not close BPA child without evidence, updated=%d", result.Updated)
+	}
+}
+
+func TestGitHubMergeCannotCloseBPAChildWithoutCommitEvidence(t *testing.T) {
+	ctx := context.Background()
+	parentID := createMetadataTestIssue(t, "BPA GitHub child requires commit evidence")
+	parent, err := testHandler.Queries.GetIssue(ctx, parseUUID(parentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := newRequest("POST", "/api/issues/"+parentID+"/bpa/template", nil)
+	if _, err := testHandler.setBPAWorkflowValues(req, parent, map[string]any{"bpa.template": "standard"}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	createChild := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           "BPA GitHub child without evidence " + time.Now().Format(time.RFC3339Nano),
+		"status":          "in_progress",
+		"parent_issue_id": parentID,
+	})
+	testHandler.CreateIssue(w, createChild)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create child: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var child IssueResponse
+	if err := json.NewDecoder(w.Body).Decode(&child); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, child.ID) })
+
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testHandler.advanceIssueToDone(ctx, issue, testWorkspaceID)
+	updated, err := testHandler.Queries.GetIssue(ctx, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status == "done" {
+		t.Fatal("GitHub merge must not close BPA child without evidence")
+	}
+}
+
+func TestConfiguredArchivistCannotCreateIssueComment(t *testing.T) {
+	ctx := context.Background()
+	issueID := createMetadataTestIssue(t, "BPA Archivist cannot comment")
+	var archivistID string
+	if err := testPool.QueryRow(ctx, `SELECT id FROM agent WHERE workspace_id = $1 AND name = 'Handler Test Agent'`, testWorkspaceID).Scan(&archivistID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET metadata = $2::jsonb WHERE id = $1`, issueID, fmt.Sprintf(`{"bpa.template":"standard","bpa.archivist_agent_id":%q}`, archivistID)); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+issueID+"/comments", CreateCommentRequest{Content: "архівний прогрес"})
+	req = withURLParam(req, "id", issueID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", archivistID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("configured Archivist comment: expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

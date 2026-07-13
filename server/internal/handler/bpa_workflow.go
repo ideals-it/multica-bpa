@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -18,17 +19,6 @@ import (
 
 type StartBPAWorkflowRequest struct {
 	Template bpa.Template `json:"template"`
-}
-
-type ApprovalRequest struct {
-	Plan             string `json:"plan"`
-	Summary          string `json:"summary"`
-	ProductionAction bool   `json:"production_action"`
-}
-
-type ApprovalDecisionRequest struct {
-	Decision string `json:"decision"`
-	Note     string `json:"note"`
 }
 
 type BPAWorkflowResponse struct {
@@ -71,82 +61,6 @@ func (h *Handler) StartBPAWorkflow(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start BPA workflow")
-		return
-	}
-	h.writeBPAWorkflow(w, updated)
-}
-
-func (h *Handler) RequestBPAApproval(w http.ResponseWriter, r *http.Request) {
-	var req ApprovalRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if !req.ProductionAction || strings.TrimSpace(req.Plan) == "" || strings.TrimSpace(req.Summary) == "" {
-		writeError(w, http.StatusBadRequest, "production action, plan, and short summary are required")
-		return
-	}
-	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
-	if !ok {
-		return
-	}
-	if _, ok := requireUserID(w, r); !ok {
-		return
-	}
-	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
-	if err != nil || state.Template != bpa.TemplateProduction {
-		writeError(w, http.StatusBadRequest, "production BPA workflow is required")
-		return
-	}
-	updated, err := h.setBPAWorkflowValues(r, issue, map[string]any{
-		"bpa.production_action":    true,
-		"bpa.plan_fingerprint":     bpa.PlanFingerprint(req.Plan),
-		"bpa.approval_summary":     strings.TrimSpace(req.Summary),
-		"bpa.approval_status":      string(bpa.ApprovalPending),
-		"bpa.approval_fingerprint": "",
-		"bpa.waiting_for":          string(bpa.WaitingForHumanApproval),
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to request BPA approval")
-		return
-	}
-	h.writeBPAWorkflow(w, updated)
-}
-
-func (h *Handler) DecideBPAApproval(w http.ResponseWriter, r *http.Request) {
-	var req ApprovalDecisionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
-	if !ok {
-		return
-	}
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	if actorType, _ := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID)); actorType != "member" {
-		writeError(w, http.StatusForbidden, "only a human member can decide BPA approval")
-		return
-	}
-	if req.Decision != string(bpa.ApprovalApproved) && req.Decision != string(bpa.ApprovalRejected) {
-		writeError(w, http.StatusBadRequest, "decision must be approved or rejected")
-		return
-	}
-	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
-	if err != nil || state.Template != bpa.TemplateProduction || !state.ProductionAction || state.PlanFingerprint == "" {
-		writeError(w, http.StatusBadRequest, "current production approval request is required")
-		return
-	}
-	updated, err := h.setBPAWorkflowValues(r, issue, map[string]any{
-		"bpa.approval_status":      req.Decision,
-		"bpa.approval_fingerprint": state.PlanFingerprint,
-		"bpa.waiting_for":          string(bpa.WaitingForLead),
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save BPA approval decision")
 		return
 	}
 	h.writeBPAWorkflow(w, updated)
@@ -242,6 +156,26 @@ func (h *Handler) bpaChildHasCommitEvidence(ctx context.Context, issue db.Issue)
 	return bpa.HasCommitEvidence(parseIssueMetadata(issue.Metadata)), nil
 }
 
+// validateBPACompletion is the one completion gate shared by direct edits,
+// batch updates, and GitHub merge completion.
+func (h *Handler) validateBPACompletion(ctx context.Context, issue db.Issue) error {
+	hasCommitEvidence, err := h.bpaChildHasCommitEvidence(ctx, issue)
+	if err != nil {
+		return err
+	}
+	if !hasCommitEvidence {
+		return fmt.Errorf("BPA child needs a commit SHA or explicit no repo changes reason before completion")
+	}
+	hasOpenChildren, err := h.bpaRootHasOpenChildren(ctx, issue)
+	if err != nil {
+		return err
+	}
+	if hasOpenChildren {
+		return fmt.Errorf("BPA main task cannot be closed while child tasks are still open")
+	}
+	return nil
+}
+
 // queueBPAArchivist schedules one read-only Archivist refresh for a BPA root.
 // The task reads live issue state, so an existing pending run already covers
 // later events and the native active-task unique index provides deduplication.
@@ -309,6 +243,11 @@ func (h *Handler) resolveBPAArchivist(ctx context.Context, issue db.Issue, metad
 		return updated, agent.ID, true
 	}
 	return issue, pgtype.UUID{}, false
+}
+
+func isConfiguredBPAArchivist(issue db.Issue, agentID string) bool {
+	archivistID, _ := parseIssueMetadata(issue.Metadata)["bpa.archivist_agent_id"].(string)
+	return archivistID != "" && archivistID == agentID
 }
 
 // queueBPAArchivistAfterTaskCompletion refreshes the root knowledge index even

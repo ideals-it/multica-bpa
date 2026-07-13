@@ -58,7 +58,19 @@ func TestCanDispatchRejectsProductionActionWithoutMatchingHumanApproval(t *testi
 	}
 }
 
-func TestCanDispatchAllowsMatchingHumanApproval(t *testing.T) {
+func TestCanDispatchAllowsMatchingTicketScopeApproval(t *testing.T) {
+	state := State{
+		Template:                 TemplateProduction,
+		ScopeFingerprint:         "scope-a",
+		ApprovedScopeFingerprint: "scope-a",
+		ApprovalStatus:           ApprovalApproved,
+	}
+	if decision := CanDispatch(state); !decision.Allowed || decision.Err != nil {
+		t.Fatalf("expected allowed dispatch, got %#v", decision)
+	}
+}
+
+func TestCanDispatchRejectsLegacyPlanApprovalWithoutTicketScope(t *testing.T) {
 	state := State{
 		Template:            TemplateProduction,
 		ProductionAction:    true,
@@ -66,8 +78,8 @@ func TestCanDispatchAllowsMatchingHumanApproval(t *testing.T) {
 		ApprovalFingerprint: "plan-a",
 		ApprovalStatus:      ApprovalApproved,
 	}
-	if decision := CanDispatch(state); !decision.Allowed || decision.Err != nil {
-		t.Fatalf("expected allowed dispatch, got %#v", decision)
+	if decision := CanDispatch(state); decision.Allowed || !errors.Is(decision.Err, ErrHumanApprovalRequired) {
+		t.Fatalf("legacy plan approval must not dispatch production work, got %#v", decision)
 	}
 }
 
