@@ -64,6 +64,29 @@ func TestTaskFailureReasonForAutopilotRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRetryExpired(t *testing.T) {
+	now := time.Now().UTC()
+	if runtimeRetryExpired(db.AutopilotRun{PlannedAt: pgtype.Timestamptz{Time: now, Valid: true}, RuntimeRetryAttempt: runtimeRetryMaxAttempts}) != true {
+		t.Fatal("retry at the attempt limit must expire")
+	}
+	if runtimeRetryExpired(db.AutopilotRun{PlannedAt: pgtype.Timestamptz{Time: now.Add(-runtimeRetryDeadline), Valid: true}}) != true {
+		t.Fatal("retry at the deadline must expire")
+	}
+	if runtimeRetryExpired(db.AutopilotRun{PlannedAt: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}, RuntimeRetryAttempt: 1}) {
+		t.Fatal("retry within budget and deadline must remain eligible")
+	}
+}
+
+func TestTriggerLocalDayWindow(t *testing.T) {
+	start, end := triggerLocalDayWindow(time.Date(2026, 7, 13, 22, 30, 0, 0, time.UTC), "Europe/Kyiv")
+	if want := time.Date(2026, 7, 13, 21, 0, 0, 0, time.UTC); !start.Equal(want) {
+		t.Fatalf("start = %s, want %s", start, want)
+	}
+	if want := time.Date(2026, 7, 14, 21, 0, 0, 0, time.UTC); !end.Equal(want) {
+		t.Fatalf("end = %s, want %s", end, want)
+	}
+}
+
 func TestBuildIssueDescription_NoTriggerPayload(t *testing.T) {
 	s := &AutopilotService{}
 	ap := db.Autopilot{Description: pgtype.Text{String: "do the thing", Valid: true}}

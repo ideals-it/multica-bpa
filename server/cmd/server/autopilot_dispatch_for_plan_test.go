@@ -149,6 +149,101 @@ func TestDispatchAutopilotForPlanIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestDispatchAutopilotForPlanDefersOptedInOfflineRunOnly(t *testing.T) {
+	ctx := context.Background()
+	queries := db.New(testPool)
+	bus := events.New()
+	taskSvc := service.NewTaskService(queries, testPool, nil, bus)
+	autopilotSvc := service.NewAutopilotService(queries, testPool, bus, taskSvc)
+
+	var runtimeID, agentID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at)
+		VALUES ($1, 'runtime retry offline', 'local', 'runtime_retry_test', 'offline', '{}'::jsonb, '{}'::jsonb, now())
+		RETURNING id::text
+	`, parseUUID(testWorkspaceID)).Scan(&runtimeID); err != nil {
+		t.Fatalf("create offline runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
+	})
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id)
+		VALUES ($1, 'runtime-retry-offline-agent', '', 'local', '{}'::jsonb, $2, 'workspace', 1, $3)
+		RETURNING id::text
+	`, parseUUID(testWorkspaceID), runtimeID, parseUUID(testUserID)).Scan(&agentID); err != nil {
+		t.Fatalf("create offline agent: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID) })
+
+	ap, err := queries.CreateAutopilot(ctx, db.CreateAutopilotParams{
+		WorkspaceID:               parseUUID(testWorkspaceID),
+		Title:                     "Deferred runtime retry",
+		AssigneeType:              "agent",
+		AssigneeID:                parseUUID(agentID),
+		Status:                    "active",
+		ExecutionMode:             "run_only",
+		CreatedByType:             "member",
+		CreatedByID:               parseUUID(testUserID),
+		RetryOnRuntimeUnavailable: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAutopilot: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, ap.ID) })
+	trigger, err := queries.CreateAutopilotTrigger(ctx, db.CreateAutopilotTriggerParams{
+		AutopilotID: ap.ID, Kind: "schedule", Enabled: true,
+		CronExpression: pgtype.Text{String: "0 9 * * *", Valid: true},
+		Timezone:       pgtype.Text{String: "UTC", Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("CreateAutopilotTrigger: %v", err)
+	}
+
+	plannedAt := time.Now().UTC().Truncate(time.Second)
+	run, err := autopilotSvc.DispatchAutopilotForPlan(ctx, ap, trigger.ID, "schedule", nil, plannedAt)
+	if err != nil {
+		t.Fatalf("DispatchAutopilotForPlan: %v", err)
+	}
+	if run.Status != "pending" || !run.PlannedAt.Valid || !run.PlannedAt.Time.Equal(plannedAt) {
+		t.Fatalf("expected one deferred pending run for original occurrence, got %+v", run)
+	}
+	if !run.RuntimeRetryAfter.Valid || !run.RuntimeRetryReason.Valid {
+		t.Fatalf("expected deferred retry state, got %+v", run)
+	}
+	var taskCount int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE autopilot_run_id = $1`, run.ID).Scan(&taskCount); err != nil {
+		t.Fatalf("count autopilot tasks: %v", err)
+	}
+	if taskCount != 0 {
+		t.Fatalf("expected no task while runtime is offline, got %d", taskCount)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE agent_runtime SET status = 'online' WHERE id = $1`, runtimeID); err != nil {
+		t.Fatalf("restore runtime: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE autopilot_run SET runtime_retry_after = now() - interval '1 second' WHERE id = $1`, run.ID); err != nil {
+		t.Fatalf("make deferred run due: %v", err)
+	}
+	if err := autopilotSvc.RecoverRuntimeDeferredRuns(ctx, parseUUID(runtimeID)); err != nil {
+		t.Fatalf("RecoverRuntimeDeferredRuns: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE autopilot_run_id = $1`, run.ID).Scan(&taskCount); err != nil {
+		t.Fatalf("count recovered autopilot tasks: %v", err)
+	}
+	if taskCount != 1 {
+		t.Fatalf("expected one recovered task, got %d", taskCount)
+	}
+	if err := autopilotSvc.RecoverRuntimeDeferredRuns(ctx, parseUUID(runtimeID)); err != nil {
+		t.Fatalf("second RecoverRuntimeDeferredRuns: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE autopilot_run_id = $1`, run.ID).Scan(&taskCount); err != nil {
+		t.Fatalf("count recovered autopilot tasks after second recovery: %v", err)
+	}
+	if taskCount != 1 {
+		t.Fatalf("expected recovery to remain idempotent, got %d tasks", taskCount)
+	}
+}
+
 func TestDispatchAutopilotSuppressesRecentDuplicateIssue(t *testing.T) {
 	ctx := context.Background()
 	queries := db.New(testPool)

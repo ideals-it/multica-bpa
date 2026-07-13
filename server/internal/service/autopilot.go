@@ -42,6 +42,14 @@ const DefaultAutopilotTriggerTimezone = "UTC"
 
 const autopilotRecentDuplicateWindow = 60 * time.Second
 
+const (
+	runtimeRetryInitialDelay = time.Minute
+	runtimeRetryMaxAttempts  = 6
+	runtimeRetryDeadline     = 12 * time.Hour
+)
+
+var runtimeRetryBackoff = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour}
+
 func NewAutopilotService(q *db.Queries, tx TxStarter, bus *events.Bus, taskSvc *TaskService) *AutopilotService {
 	return &AutopilotService{Queries: q, TxStarter: tx, Bus: bus, TaskSvc: taskSvc}
 }
@@ -206,6 +214,9 @@ func (s *AutopilotService) dispatchAutopilot(
 	plannedAt pgtype.Timestamptz,
 ) (*db.AutopilotRun, error) {
 	if reason, skip := s.shouldSkipDispatch(ctx, autopilot); skip {
+		if shouldDeferRuntimeUnavailable(autopilot, source, plannedAt, reason) {
+			return s.recordDeferredRuntimeRetry(ctx, autopilot, triggerID, source, payload, plannedAt, reason)
+		}
 		return s.recordSkippedRun(ctx, autopilot, triggerID, source, payload, plannedAt, reason)
 	}
 
@@ -272,6 +283,162 @@ func (s *AutopilotService) dispatchAutopilot(
 	})
 
 	return &run, nil
+}
+
+func shouldDeferRuntimeUnavailable(ap db.Autopilot, source string, plannedAt pgtype.Timestamptz, reason string) bool {
+	return ap.RetryOnRuntimeUnavailable &&
+		ap.ExecutionMode == "run_only" &&
+		source == "schedule" &&
+		plannedAt.Valid &&
+		strings.HasPrefix(reason, "agent runtime is ")
+}
+
+func (s *AutopilotService) recordDeferredRuntimeRetry(
+	ctx context.Context,
+	autopilot db.Autopilot,
+	triggerID pgtype.UUID,
+	source string,
+	payload []byte,
+	plannedAt pgtype.Timestamptz,
+	reason string,
+) (*db.AutopilotRun, error) {
+	run, err := s.Queries.CreateAutopilotRun(ctx, db.CreateAutopilotRunParams{
+		AutopilotID:    autopilot.ID,
+		TriggerID:      triggerID,
+		Source:         source,
+		Status:         "pending",
+		TriggerPayload: payload,
+		SquadID:        autopilotSquadAttribution(autopilot),
+		PlannedAt:      plannedAt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create deferred runtime retry: %w", err)
+	}
+	deferred, err := s.Queries.DeferAutopilotRunForRuntimeRetry(ctx, db.DeferAutopilotRunForRuntimeRetryParams{
+		ID:                  run.ID,
+		RuntimeRetryAttempt: 0,
+		RuntimeRetryAfter:   pgtype.Timestamptz{Time: time.Now().UTC().Add(runtimeRetryInitialDelay), Valid: true},
+		RuntimeRetryReason:  pgtype.Text{String: reason, Valid: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("defer runtime retry: %w", err)
+	}
+	s.Queries.UpdateAutopilotLastRunAt(ctx, autopilot.ID)
+	return &deferred, nil
+}
+
+// RecoverRuntimeDeferredRuns recovers due deferred occurrences. Runtime
+// filtering is intentionally deferred to the runtime-online listener task;
+// this service method is safe to call more than once because each occurrence
+// is claimed with SKIP LOCKED and changes out of pending before task creation.
+func (s *AutopilotService) RecoverRuntimeDeferredRuns(ctx context.Context, _ pgtype.UUID) error {
+	return s.RecoverDueRuntimeDeferredRuns(ctx)
+}
+
+func (s *AutopilotService) RecoverDueRuntimeDeferredRuns(ctx context.Context) error {
+	for {
+		more, err := s.recoverOneDeferredRuntimeRun(ctx)
+		if err != nil || !more {
+			return err
+		}
+	}
+}
+
+func (s *AutopilotService) recoverOneDeferredRuntimeRun(ctx context.Context) (bool, error) {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin runtime retry transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.Queries.WithTx(tx)
+	run, err := qtx.ClaimDueAutopilotRunForRuntimeRetry(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim deferred runtime retry: %w", err)
+	}
+	ap, err := qtx.GetAutopilot(ctx, run.AutopilotID)
+	if err != nil {
+		return false, fmt.Errorf("load deferred autopilot: %w", err)
+	}
+	if runtimeRetryExpired(run) {
+		_, err = qtx.UpdateAutopilotRunFailed(ctx, db.UpdateAutopilotRunFailedParams{ID: run.ID, FailureReason: pgtype.Text{String: "local runtime was unavailable in time", Valid: true}})
+		if err != nil {
+			return false, fmt.Errorf("fail expired runtime retry: %w", err)
+		}
+		return true, tx.Commit(ctx)
+	}
+	trigger, err := qtx.GetAutopilotTrigger(ctx, run.TriggerID)
+	if err != nil {
+		return false, fmt.Errorf("load deferred trigger: %w", err)
+	}
+	start, end := triggerLocalDayWindow(run.PlannedAt.Time, trigger.Timezone.String)
+	alreadyCompleted, err := qtx.AutopilotHasCompletedRunInUTCWindow(ctx, db.AutopilotHasCompletedRunInUTCWindowParams{AutopilotID: ap.ID, WindowStart: pgtype.Timestamptz{Time: start, Valid: true}, WindowEnd: pgtype.Timestamptz{Time: end, Valid: true}})
+	if err != nil {
+		return false, fmt.Errorf("check runtime retry day limit: %w", err)
+	}
+	if alreadyCompleted {
+		_, err = qtx.UpdateAutopilotRunSkipped(ctx, db.UpdateAutopilotRunSkippedParams{ID: run.ID, FailureReason: pgtype.Text{String: "autopilot already completed on this scheduled day", Valid: true}})
+		if err != nil {
+			return false, fmt.Errorf("skip duplicate runtime retry: %w", err)
+		}
+		return true, tx.Commit(ctx)
+	}
+	agent, _, err := s.resolveAutopilotLeader(ctx, ap)
+	if err == nil {
+		var ready bool
+		ready, _, err = AgentReadiness(ctx, qtx, agent)
+		if !ready && err == nil {
+			err = &errDispatchSkipped{reason: "agent runtime is offline at retry time"}
+		}
+	}
+	if err != nil {
+		return true, s.rescheduleDeferredRuntimeRun(ctx, tx, qtx, run, err.Error())
+	}
+	task, err := qtx.CreateAutopilotTask(ctx, db.CreateAutopilotTaskParams{AgentID: agent.ID, RuntimeID: agent.RuntimeID, Priority: 0, AutopilotRunID: run.ID, TriggerSummary: pgtype.Text{String: truncateForSummary(ap.Title, triggerSummaryMaxLen), Valid: ap.Title != ""}})
+	if err != nil {
+		return false, fmt.Errorf("create recovered autopilot task: %w", err)
+	}
+	if _, err = qtx.UpdateAutopilotRunRunning(ctx, db.UpdateAutopilotRunRunningParams{ID: run.ID, TaskID: task.ID}); err != nil {
+		return false, fmt.Errorf("mark recovered autopilot run running: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit recovered autopilot task: %w", err)
+	}
+	s.TaskSvc.NotifyTaskEnqueued(ctx, task)
+	return true, nil
+}
+
+func (s *AutopilotService) rescheduleDeferredRuntimeRun(ctx context.Context, tx pgx.Tx, qtx *db.Queries, run db.AutopilotRun, reason string) error {
+	attempt := run.RuntimeRetryAttempt + 1
+	if attempt >= runtimeRetryMaxAttempts {
+		_, err := qtx.UpdateAutopilotRunFailed(ctx, db.UpdateAutopilotRunFailedParams{ID: run.ID, FailureReason: pgtype.Text{String: "local runtime was unavailable in time", Valid: true}})
+		if err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	delay := runtimeRetryBackoff[min(int(attempt)-1, len(runtimeRetryBackoff)-1)]
+	_, err := qtx.ReleaseAutopilotRunRuntimeRetryClaim(ctx, db.ReleaseAutopilotRunRuntimeRetryClaimParams{ID: run.ID, RuntimeRetryAttempt: attempt, RuntimeRetryAfter: pgtype.Timestamptz{Time: time.Now().UTC().Add(delay), Valid: true}, RuntimeRetryReason: pgtype.Text{String: reason, Valid: true}})
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func runtimeRetryExpired(run db.AutopilotRun) bool {
+	return run.RuntimeRetryAttempt >= runtimeRetryMaxAttempts || time.Since(run.PlannedAt.Time) >= runtimeRetryDeadline
+}
+
+func triggerLocalDayWindow(at time.Time, timezone string) (time.Time, time.Time) {
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	local := at.In(loc)
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	return start.UTC(), start.AddDate(0, 0, 1).UTC()
 }
 
 // dispatchCreateIssue creates an issue and enqueues a task for the agent.
