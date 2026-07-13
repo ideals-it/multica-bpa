@@ -25,6 +25,21 @@ func TestStartBPAWorkflowRejectsMainIssueWithoutAgentLead(t *testing.T) {
 	}
 }
 
+func TestBPAApprovalCommentRecognizesClearDeploymentDirective(t *testing.T) {
+	content := "[@AT Team Lead](mention://agent/7188d30e-c3eb-4f5b-8acf-cb2377069bf7) Деплой"
+	if !isBPAApprovalComment(content) {
+		t.Fatalf("clear deployment directive %q must approve the pending Production scope", content)
+	}
+}
+
+func TestBPAApprovalCommentRejectsDeploymentQuestionOrNegation(t *testing.T) {
+	for _, content := range []string{"Що з деплоєм?", "Деплой не роби"} {
+		if isBPAApprovalComment(content) {
+			t.Fatalf("non-approval comment %q must not approve the pending Production scope", content)
+		}
+	}
+}
+
 func TestAgentMovingRootToReviewStartsPendingProductionApproval(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

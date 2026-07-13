@@ -14,8 +14,10 @@ Verified with focused live-PostgreSQL handler tests. No UI, board, predefined
 status, production service, IAM, secret, or remote deployment behavior changed.
 
 Pending Production review can no longer be moved manually to another status:
-the ticket remains visibly `In Review` until a member writes the explicit
-approval comment `Погоджую` or `Погоджено`.
+the ticket remains visibly `In Review` until a member writes a clear approval
+directive. The parser accepts contextual confirmations such as `Погоджую`,
+`Деплой`, `Роби`, or `Виконуй`, including after a Lead mention, but rejects
+questions and negations.
 
 ## 2026-07-13 — Lead wake-up after concurrent specialist result
 

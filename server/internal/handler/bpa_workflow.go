@@ -373,8 +373,15 @@ func (h *Handler) queueRootAssigneeAfterSpecialistCompletion(ctx context.Context
 }
 
 func isBPAApprovalComment(content string) bool {
-	switch strings.ToLower(strings.TrimSpace(content)) {
-	case "approve", "approved", "погоджую", "погоджено":
+	normalized := strings.ToLower(strings.Trim(content, " \t\r\n.!"))
+	if strings.HasPrefix(normalized, "[@") {
+		if end := strings.Index(normalized, ")"); end >= 0 {
+			normalized = strings.TrimSpace(normalized[end+1:])
+		}
+	}
+	switch normalized {
+	case "approve", "approved", "погоджую", "погоджено", "підтверджую", "схвалюю", "даю добро",
+		"деплой", "деплоїти", "роби", "робіть", "виконуй", "виконуйте", "запускай", "запускайте":
 		return true
 	default:
 		return false
