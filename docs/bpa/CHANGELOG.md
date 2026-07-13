@@ -2,11 +2,12 @@
 
 ## 2026-07-13 — Visible specialist handoff to Lead
 
-For a task-scoped specialist comment on a BPA main ticket, the server now
+For a task-scoped specialist comment on an agent-owned main ticket, the server now
 adds one compact `Наступне` mention to the assigned Lead when the specialist
 did not name any next owner. An explicit agent, squad, or member mention is
 preserved unchanged. This keeps the readable handoff and the wake-up target in
 the same comment without creating a child ticket or an extra system comment.
+The rule applies even before a BPA template is started.
 
 No UI, board, predefined status, production service, IAM, secret, or remote
 deployment behavior changed.

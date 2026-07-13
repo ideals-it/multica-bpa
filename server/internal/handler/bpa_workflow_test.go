@@ -65,6 +65,26 @@ func TestBPAWorkerCommentGetsLeadHandoffWhenNoOwnerMentioned(t *testing.T) {
 	}
 }
 
+func TestAgentOwnedRootWorkerCommentGetsLeadHandoffWithoutTemplate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	leadID := createHandlerTestAgent(t, "UntemplatedHandoffLead", []byte("[]"))
+	workerID := createHandlerTestAgent(t, "UntemplatedHandoffWorker", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92140, "untemplated worker handoff mention")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := testHandler.ensureBPAWorkerHandoffMention(ctx, issue, parseUUID(workerID), pgtype.UUID{Valid: true}, "готово")
+	want := "mention://agent/" + leadID
+	if !strings.Contains(content, want) {
+		t.Fatalf("worker result on an agent-owned root must hand off to Lead, got %q", content)
+	}
+}
+
 func TestAgentMovingRootToReviewStartsPendingProductionApproval(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

@@ -1377,16 +1377,25 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-// ensureBPAWorkerHandoffMention keeps the root ticket readable when a
-// specialist completes a task without naming the next owner. It only touches
-// task-scoped agent comments on an enabled BPA root; explicit agent, squad, or
-// member routing remains the agent's own decision.
+// ensureBPAWorkerHandoffMention keeps an agent-owned root ticket readable when
+// a specialist completes a task without naming the next owner. It covers every
+// task-scoped agent comment on such a root, including roots that have not yet
+// started a BPA template; explicit agent, squad, or member routing remains the
+// agent's own decision.
 func (h *Handler) ensureBPAWorkerHandoffMention(ctx context.Context, issue db.Issue, agentID, sourceTaskID pgtype.UUID, content string) string {
 	if !sourceTaskID.Valid || strings.TrimSpace(content) == "" {
 		return content
 	}
-	root, enabled, err := h.bpaRoot(ctx, issue)
-	if err != nil || !enabled || root.ID != issue.ID || root.AssigneeType.String != "agent" ||
+	root := issue
+	if issue.ParentIssueID.Valid {
+		var enabled bool
+		var err error
+		root, enabled, err = h.bpaRoot(ctx, issue)
+		if err != nil || !enabled {
+			return content
+		}
+	}
+	if root.AssigneeType.String != "agent" ||
 		!root.AssigneeID.Valid || root.AssigneeID == agentID {
 		return content
 	}
