@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/bpa"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -37,6 +38,30 @@ func TestBPAApprovalCommentRejectsDeploymentQuestionOrNegation(t *testing.T) {
 		if isBPAApprovalComment(content) {
 			t.Fatalf("non-approval comment %q must not approve the pending Production scope", content)
 		}
+	}
+}
+
+func TestBPAWorkerCommentGetsLeadHandoffWhenNoOwnerMentioned(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	leadID := createHandlerTestAgent(t, "HandoffLead", []byte("[]"))
+	workerID := createHandlerTestAgent(t, "HandoffWorker", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92139, "worker handoff mention")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{"bpa.template": "standard"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := testHandler.ensureBPAWorkerHandoffMention(ctx, issue, parseUUID(workerID), pgtype.UUID{Valid: true}, "готово")
+	want := "mention://agent/" + leadID
+	if !strings.Contains(content, want) {
+		t.Fatalf("worker result must hand off to Lead, got %q", content)
 	}
 }
 

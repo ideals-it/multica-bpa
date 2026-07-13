@@ -9,6 +9,8 @@
   contract when an agent moves an otherwise untemplated agent-owned root to
   `In Review`, preventing a prompt-only approval state, and rejects a manual
   move out of pending `In Review` before approval is recorded.
+- `server/internal/handler/comment.go` appends one Lead handoff mention to a
+  task-scoped specialist result on the root only when it names no next owner.
 - `server/internal/service/task.go` checks the policy before direct assignment,
   mentions, and reruns enqueue an agent task.
 - `server/internal/handler/issue_child_done.go` wakes the root assignee only

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -1302,6 +1303,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// (@tiptap/markdown with html:false). Running an HTML sanitizer here would
 	// entity-encode Markdown syntax characters (>, ", &, <) and corrupt the
 	// source. See issue #1303 / discussion in MUL-1119, MUL-1125.
+	content := req.Content
+	if authorType == "agent" {
+		content = h.ensureBPAWorkerHandoffMention(r.Context(), issue, parseUUID(authorID), sourceTaskID, content)
+	}
 
 	// parent_id stores the exact comment being replied to. Thread-level behavior
 	// (for example auto-unresolving a resolved thread) resolves the root
@@ -1322,7 +1327,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID:  issue.WorkspaceID,
 		AuthorType:   authorType,
 		AuthorID:     parseUUID(authorID),
-		Content:      req.Content,
+		Content:      content,
 		Type:         req.Type,
 		ParentID:     parentID,
 		SourceTaskID: sourceTaskID,
@@ -1332,7 +1337,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create comment: "+err.Error())
 		return
 	}
-	if updatedIssue, approvalErr := h.approveBPAReviewComment(r, issue, authorType, req.Content); approvalErr != nil {
+	if updatedIssue, approvalErr := h.approveBPAReviewComment(r, issue, authorType, content); approvalErr != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record BPA approval")
 		return
 	} else {
@@ -1370,6 +1375,31 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs)
 
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// ensureBPAWorkerHandoffMention keeps the root ticket readable when a
+// specialist completes a task without naming the next owner. It only touches
+// task-scoped agent comments on an enabled BPA root; explicit agent, squad, or
+// member routing remains the agent's own decision.
+func (h *Handler) ensureBPAWorkerHandoffMention(ctx context.Context, issue db.Issue, agentID, sourceTaskID pgtype.UUID, content string) string {
+	if !sourceTaskID.Valid || strings.TrimSpace(content) == "" {
+		return content
+	}
+	root, enabled, err := h.bpaRoot(ctx, issue)
+	if err != nil || !enabled || root.ID != issue.ID || root.AssigneeType.String != "agent" ||
+		!root.AssigneeID.Valid || root.AssigneeID == agentID {
+		return content
+	}
+	for _, mention := range util.ParseMentions(content) {
+		if mention.Type == "agent" || mention.Type == "squad" || mention.Type == "member" {
+			return content
+		}
+	}
+	leadName := "AT Team Lead"
+	if lead, err := h.Queries.GetAgent(ctx, root.AssigneeID); err == nil && strings.TrimSpace(lead.Name) != "" {
+		leadName = lead.Name
+	}
+	return content + fmt.Sprintf("\n\n**Наступне:** [@%s](mention://agent/%s) прийняти результат і визначити наступну дію.", leadName, uuidToString(root.AssigneeID))
 }
 
 // noteCommentPrefix marks a comment as a human-only note. A comment whose first
