@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -2523,6 +2524,49 @@ type TaskCompleteRequest struct {
 	WorkDir   string `json:"work_dir"`   // working directory used during execution
 }
 
+// TaskLocalArtifactResponse contains a task root and a relative path. It is
+// available only through daemon authentication so a browser renderer never
+// receives a raw local filesystem path.
+type TaskLocalArtifactResponse struct {
+	WorkDir      string `json:"work_dir"`
+	RelativePath string `json:"relative_path"`
+}
+
+// ResolveTaskLocalArtifact authorizes a task-owned local artifact for the
+// Desktop main process. The server validates the task and lexical relative
+// path; Electron then resolves real paths and enforces local containment before
+// handing the target to the OS shell.
+func (h *Handler) ResolveTaskLocalArtifact(w http.ResponseWriter, r *http.Request) {
+	task, _, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	if !task.WorkDir.Valid || task.WorkDir.String == "" {
+		writeError(w, http.StatusNotFound, "local artifact is unavailable")
+		return
+	}
+	relativePath, ok := safeTaskArtifactPath(r.URL.Query().Get("artifact_path"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "artifact_path must be a relative path inside the task work directory")
+		return
+	}
+	writeJSON(w, http.StatusOK, TaskLocalArtifactResponse{
+		WorkDir:      task.WorkDir.String,
+		RelativePath: relativePath,
+	})
+}
+
+func safeTaskArtifactPath(input string) (string, bool) {
+	if input == "" || filepath.IsAbs(input) {
+		return "", false
+	}
+	clean := filepath.Clean(input)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return clean, true
+}
+
 func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
@@ -2560,6 +2604,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// by the existing per-(issue, agent) dedup, and terminating because the
 	// triggering comment always predates the follow-up run's started_at.
 	h.reconcileCommentsOnCompletion(r.Context(), task)
+	h.queueRootAssigneeAfterSpecialistCompletion(r.Context(), *task)
 	h.queueBPAArchivistAfterTaskCompletion(r.Context(), *task)
 
 	// Best-effort revoke of any agent task token minted at claim time.

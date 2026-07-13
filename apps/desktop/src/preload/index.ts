@@ -109,6 +109,11 @@ const desktopAPI = {
   },
   /** Open a URL in the default browser */
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
+  openLocalArtifact: (
+    taskId: string,
+    action: "open" | "reveal",
+    artifactPath: string,
+  ) => ipcRenderer.invoke("local-artifact:open", taskId, action, artifactPath),
   /** Download a file by URL through Electron's native download system.
    *  Shows a save dialog and saves to disk. Unlike openExternal, this
    *  avoids browser rendering of HTML files on Linux.

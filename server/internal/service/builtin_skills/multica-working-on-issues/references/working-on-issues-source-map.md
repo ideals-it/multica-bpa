@@ -6,6 +6,18 @@ after the latest `main` merge; the prior skill cited pre-merge lines that have
 since moved (see the "drifted" column). Re-confirm with the verification command
 at the bottom before relying on an exact line.
 
+## Local task artifact links
+
+- The daemon injects `MULTICA_TASK_ID` into every agent process:
+  `server/internal/daemon/daemon.go` (`agentEnv["MULTICA_TASK_ID"]`).
+- `GET /api/daemon/tasks/{taskId}/local-artifact` resolves only a daemon-owned
+  task and a lexical relative artifact path:
+  `server/cmd/server/router.go` (`ResolveTaskLocalArtifact`) and
+  `server/internal/handler/daemon.go` (`ResolveTaskLocalArtifact`,
+  `safeTaskArtifactPath`).
+- Desktop canonicalizes both work directory and target before opening it:
+  `apps/desktop/src/main/local-artifact.ts` (`resolveLocalArtifactPath`).
+
 ## `multica issue pull-requests` — read PR links from Multica
 
 | Behavior | File:line | Drifted from |

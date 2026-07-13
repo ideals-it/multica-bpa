@@ -17,7 +17,9 @@ Lead moves the root to `In Progress` and mentions the Investigator on the root
 with a clickable action mention such as
 `**[@AT Builder](mention://agent/<agent-id>)**`.
 The Investigator is read-only against logs, code, configuration, and run
-history. It posts one evidence report on the root and mentions Team Lead.
+history. It posts one evidence report on the root. The server wakes Team Lead
+after the final specialist run; use a clickable Lead mention only for a
+specific question that needs attention before the normal handoff.
 Lead then mentions Quality on the same root to test the evidence, not a fix.
 
 ```text
@@ -31,6 +33,16 @@ Lead then mentions Quality on the same root to test the evidence, not a fix.
 
 **Наступне:** <bold owner and exact action>
 ```
+
+For a local evidence file produced in the current task work directory, use a
+Desktop-safe artifact link:
+
+```markdown
+[**/absolute/workdir/audit-results/evidence.json**](local-artifact://task/${MULTICA_TASK_ID}/open/audit-results/evidence.json)
+```
+
+The target path must be relative to the current work directory. Do not use
+`file://` or expose a path outside that directory.
 
 Quality returns one verdict to Lead. Lead closes the root as `Done` when the
 answer is evidenced, or sets it `Blocked` with the exact missing data. If a fix

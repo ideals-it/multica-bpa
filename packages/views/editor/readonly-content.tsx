@@ -76,7 +76,7 @@ const sanitizeSchema = {
   tagNames: [...(defaultSchema.tagNames ?? []), "mark"],
   protocols: {
     ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), "mention", "slash"],
+    href: [...(defaultSchema.protocols?.href ?? []), "mention", "slash", "local-artifact"],
     // Permit inline data-URI images (QR codes, charts, base64 screenshots).
     // The scheme gate only allows `data:` through here; attributes.img below
     // narrows it to image/* so non-image data URIs are still rejected.
@@ -119,6 +119,7 @@ const sanitizeSchema = {
 function urlTransform(url: string): string {
   if (url.startsWith("mention://")) return url;
   if (url.startsWith("slash://skill/")) return url;
+  if (url.startsWith("local-artifact://")) return url;
   // Allow inline data:image/* URIs — defaultUrlTransform strips every data: URL
   // to '', which would blank the src even after rehype-sanitize keeps it. Kept
   // in sync with the image/* narrowing in sanitizeSchema (protocols.src +
@@ -257,6 +258,29 @@ function ReadonlyLink({
     return <span className="slash-command">{children}</span>;
   }
 
+  const localArtifact = parseLocalArtifactHref(href);
+  if (localArtifact) {
+    const desktop = getDesktopLocalArtifactAPI();
+    // The web client intentionally renders an artifact label as text. Only the
+    // Electron main process can obtain the task root and touch the filesystem.
+    if (!desktop) return <span>{children}</span>;
+    return (
+      <a
+        href={href}
+        onClick={(e) => {
+          e.preventDefault();
+          void desktop.openLocalArtifact(
+            localArtifact.taskId,
+            localArtifact.action,
+            localArtifact.artifactPath,
+          );
+        }}
+      >
+        {children}
+      </a>
+    );
+  }
+
   if (isMentionHref(href)) {
     const match = href.match(/^mention:\/\/(member|agent|issue|project|all)\/(.+)$/);
     if (match?.[1] === "issue" && match[2]) {
@@ -298,6 +322,43 @@ function ReadonlyLink({
       {children}
     </a>
   );
+}
+
+type LocalArtifactAction = "open" | "reveal";
+
+interface DesktopLocalArtifactAPI {
+  openLocalArtifact: (
+    taskId: string,
+    action: LocalArtifactAction,
+    artifactPath: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
+}
+
+function getDesktopLocalArtifactAPI(): DesktopLocalArtifactAPI | null {
+  if (typeof window === "undefined") return null;
+	const api = (window as Window & { desktopAPI?: Partial<DesktopLocalArtifactAPI> }).desktopAPI;
+	return typeof api?.openLocalArtifact === "function" ? (api as DesktopLocalArtifactAPI) : null;
+}
+
+function parseLocalArtifactHref(href?: string): {
+  taskId: string;
+  action: LocalArtifactAction;
+  artifactPath: string;
+} | null {
+	if (!href) return null;
+	const match = href.match(
+		/^local-artifact:\/\/task\/([0-9a-f]{8}-[0-9a-f-]{28})\/(open|reveal)\/(.+)$/i,
+	);
+	if (!match?.[1] || !match[2] || !match[3]) return null;
+	try {
+		const artifactPath = decodeURIComponent(match[3]);
+		if (!artifactPath || artifactPath.startsWith("/") || artifactPath === ".." || artifactPath.startsWith("../")) {
+			return null;
+		}
+		return { taskId: match[1], action: match[2] as LocalArtifactAction, artifactPath };
+	} catch {
+		return null;
+	}
 }
 
 function buildComponents(): Partial<Components> {

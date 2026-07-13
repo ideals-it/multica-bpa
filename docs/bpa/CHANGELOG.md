@@ -1,5 +1,17 @@
 # BPA fork changelog
 
+## 2026-07-13 — Reliable root handoff and local artifact links
+
+- A completed specialist run on a root ticket now queues its assigned Lead
+  after the final parallel specialist finishes. The queue uses normal task
+  deduplication and adds no technical system comment.
+- Desktop comments can open or reveal a task-produced artifact using a
+  task-bound `local-artifact://` link. The server checks task/workspace access;
+  Desktop blocks traversal and symlink escape before the OS receives a path.
+
+No board, predefined status, layout, production service, IAM, secret, or
+deployment behavior changed.
+
 ## 2026-07-13 — Active handoff status guard
 
 The server now rejects an agent attempt to set a ticket to `Blocked` while a

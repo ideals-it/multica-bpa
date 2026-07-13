@@ -297,6 +297,17 @@ async function ensureActiveProfile(): Promise<ActiveProfile> {
   return activeProfile;
 }
 
+// Used only by another Electron main-process module. It never crosses preload
+// IPC, so the daemon token remains unavailable to renderer JavaScript.
+export async function getDesktopDaemonApiCredentials(): Promise<{ serverUrl: string; token: string } | null> {
+	const active = await ensureActiveProfile();
+	const config = await readProfileConfig(active.name);
+	const serverUrl = typeof config.server_url === "string" ? config.server_url : targetApiBaseUrl;
+	const token = typeof config.token === "string" ? config.token : "";
+	if (!serverUrl || !token) return null;
+	return { serverUrl, token };
+}
+
 function invalidateActiveProfile(): void {
   activeProfile = null;
 }

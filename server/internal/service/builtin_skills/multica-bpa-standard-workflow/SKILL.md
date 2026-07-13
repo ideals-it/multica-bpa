@@ -37,8 +37,10 @@ owner.
    names the specialist with a clickable action mention, for example
    `**[@AT Builder](mention://agent/<builder-id>)**`.
 2. The specialist works only on the root. It makes a focused local commit when
-   repository files changed, then posts one final result on the root and
-   mentions `**[@AT Team Lead](mention://agent/<lead-id>)**`.
+   repository files changed, then posts one final result on the root. The
+   server automatically wakes the root Lead after the last specialist run, so
+   a missing mention cannot strand the task. A clickable Lead mention remains
+   useful only when the comment also asks a specific question.
 3. Lead reads that result and, on the same root, mentions
    `**[@AT Quality](mention://agent/<quality-id>)**` for an independent check.
 4. Quality posts one verdict on the root and mentions Team Lead.
@@ -56,6 +58,18 @@ Every material comment uses separate Markdown paragraphs:
 
 **Наступне:** <bold owner and exact action>
 ```
+
+When a result is a local file inside the current task work directory, make the
+visible full path clickable in Desktop. `MULTICA_TASK_ID` is available during a
+daemon run; the target path is relative to that task work directory:
+
+```markdown
+[**/absolute/workdir/audit-results/report.json**](local-artifact://task/${MULTICA_TASK_ID}/open/audit-results/report.json)
+```
+
+Use `reveal` instead of `open` to select the file in its folder. Do not use
+`file://`, do not link paths outside the work directory, and leave a plain path
+when the result was not produced by the current task.
 
 ## Root summary before Done
 

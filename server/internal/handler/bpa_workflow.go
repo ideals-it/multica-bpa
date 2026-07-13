@@ -290,6 +290,50 @@ func (h *Handler) queueBPAArchivistAfterTaskCompletion(ctx context.Context, task
 	h.queueBPAArchivist(ctx, issue, "task_completed")
 }
 
+// queueRootAssigneeAfterSpecialistCompletion closes the single-ticket handoff
+// gap: when a specialist completes work on an agent-owned root issue, the
+// owner receives one normal follow-up run. This is intentionally independent
+// of BPA metadata and comment mention syntax, because a Lead can delegate on a
+// normal issue as well as on a BPA template.
+//
+// A task completion retry is harmless while the queued owner task is active:
+// ListActiveTasksByIssue sees it and returns before enqueueing. Once a Lead
+// has processed the handoff, a daemon should not replay the old completion.
+func (h *Handler) queueRootAssigneeAfterSpecialistCompletion(ctx context.Context, task db.AgentTaskQueue) {
+	if !task.IssueID.Valid {
+		return
+	}
+	issue, err := h.Queries.GetIssue(ctx, task.IssueID)
+	if err != nil || issue.ParentIssueID.Valid || issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
+		return
+	}
+	if issue.Status == "done" || issue.Status == "cancelled" || task.AgentID == issue.AssigneeID {
+		return
+	}
+
+	active, err := h.Queries.ListActiveTasksByIssue(ctx, issue.ID)
+	if err != nil {
+		slog.Warn("root handoff: list active tasks failed", "issue_id", uuidToString(issue.ID), "error", err)
+		return
+	}
+	for _, activeTask := range active {
+		// A still-active specialist means the Lead must wait for all evidence.
+		// An active Lead already owns the next step, so a duplicate queue would
+		// be both noisy and potentially concurrent.
+		if activeTask.AgentID != task.AgentID {
+			return
+		}
+	}
+
+	if _, err := h.TaskService.EnqueueTaskForIssue(ctx, issue); err != nil {
+		slog.Warn("root handoff: enqueue assignee failed",
+			"issue_id", uuidToString(issue.ID),
+			"agent_id", uuidToString(issue.AssigneeID),
+			"completed_task_id", uuidToString(task.ID),
+			"error", err)
+	}
+}
+
 func isBPAApprovalComment(content string) bool {
 	switch strings.ToLower(strings.TrimSpace(content)) {
 	case "approve", "approved", "погоджую", "погоджено":
