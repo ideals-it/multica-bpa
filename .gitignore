@@ -53,6 +53,7 @@ apps/web/test-results/
 
 # local settings
 .claude/
+.worktrees/
 .tool-versions
 
 # feature tracking
