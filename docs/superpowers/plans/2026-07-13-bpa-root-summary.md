@@ -30,7 +30,7 @@
 - Consumes: `db.Issue` and ordered `[]db.Comment`.
 - Produces: `hasBPAFinalRootSummary(root db.Issue, comments []db.Comment) bool`.
 
-- [ ] **Step 1: Write the failing unit table test**
+- [x] **Step 1: Write the failing unit table test**
 
 ```go
 valid := "**Що було не так:** причина\n\n" +
@@ -43,13 +43,13 @@ valid := "**Що було не так:** причина\n\n" +
 // member-author cases. Only the first case must return true.
 ```
 
-- [ ] **Step 2: Run it red**
+- [x] **Step 2: Run it red**
 
 Run: `cd server && go test ./internal/handler -run TestHasBPAFinalRootSummary -count=1`
 
 Expected: FAIL because the helper does not exist.
 
-- [ ] **Step 3: Implement the pure helper**
+- [x] **Step 3: Implement the pure helper**
 
 ```go
 var bpaFinalSummaryHeadings = []string{
@@ -76,7 +76,7 @@ func hasBPAFinalRootSummary(root db.Issue, comments []db.Comment) bool {
 `allBPAFinalSummaryHeadingsPresent` uses `strings.Contains` for every exact
 heading; this is a visible agent contract, not Markdown parsing.
 
-- [ ] **Step 4: Run the unit test green and commit**
+- [x] **Step 4: Run the unit test green and commit**
 
 Run: `cd server && go test ./internal/handler -run TestHasBPAFinalRootSummary -count=1`
 
@@ -103,7 +103,7 @@ git commit -m "feat(bpa): validate lead root summaries"
 - Produces: `validateBPAFinalRootSummary(ctx, issue) error` after current
   commit-evidence and open-child checks.
 
-- [ ] **Step 1: Add failing HTTP regression tests**
+- [x] **Step 1: Add failing HTTP regression tests**
 
 Add `TestBPARootCannotCloseWithoutLeadFinalSummary` and
 `TestBPARootCanCloseWithLeadFinalSummary` to
@@ -114,13 +114,13 @@ second inserts a qualifying Team Lead comment through `Queries.CreateComment`
 and expects `200`. Add an equivalent `BatchUpdateIssues` test to prevent a
 bypass.
 
-- [ ] **Step 2: Run the new tests red**
+- [x] **Step 2: Run the new tests red**
 
 Run: `cd server && go test ./internal/handler -run 'TestBPA.*FinalSummary' -count=1`
 
 Expected: the no-summary transition incorrectly succeeds.
 
-- [ ] **Step 3: Add the root-only completion guard**
+- [x] **Step 3: Add the root-only completion guard**
 
 ```go
 func (h *Handler) validateBPAFinalRootSummary(ctx context.Context, issue db.Issue) error {
@@ -147,7 +147,7 @@ func (h *Handler) validateBPAFinalRootSummary(ctx context.Context, issue db.Issu
 Call it as the final statement of `validateBPACompletion` after the existing
 open-child guard.
 
-- [ ] **Step 4: Run focused tests and commit**
+- [x] **Step 4: Run focused tests and commit**
 
 Run: `cd server && go test ./internal/handler -run 'TestBPA.*(Close|Completion|FinalSummary)' -count=1`
 
@@ -175,7 +175,7 @@ git commit -m "fix(bpa): require lead summary before root completion"
 - Produces: root comments that pass the completion guard and remain plain
   Ukrainian summaries, not technical transcripts.
 
-- [ ] **Step 1: Extend built-in skill assertions red**
+- [x] **Step 1: Extend built-in skill assertions red**
 
 Require every BPA workflow skill to contain each exact heading:
 
@@ -194,7 +194,7 @@ Run: `cd server && go test ./internal/service -run 'TestBPA.*Workflow' -count=1`
 
 Expected: FAIL until templates include the contract.
 
-- [ ] **Step 2: Update all templates and the live Lead prompt**
+- [x] **Step 2: Update all templates and the live Lead prompt**
 
 Add this compact section to every BPA template and the live **AT Team Lead**
 instructions:
@@ -207,7 +207,7 @@ post one final root summary with **Що було не так:**, **Що змін
 commands, child comments, or a task transcript.
 ```
 
-- [ ] **Step 3: Repair the current case through normal APIs**
+- [x] **Step 3: Repair the current case through normal APIs**
 
 Use the authenticated local Multica API to add a Lead-authored BPA-176 root
 summary: Google API temporary failures exhausted retry and became 500; `fd6a512`
@@ -217,7 +217,7 @@ BPA-179, and BPA-180 to `Done`, unused BPA-178 to `Cancelled`, then close
 BPA-176 through the normal status API. Do not create a ticket or invoke a
 deployment while doing this bookkeeping.
 
-- [ ] **Step 4: Verify skills, live ticket, changelog, and commit**
+- [x] **Step 4: Verify skills, live ticket, changelog, and commit**
 
 Run:
 
@@ -245,7 +245,7 @@ git commit -m "docs(bpa): require plain-language root summaries"
 - Consumes: the completed server gate and Lead contract.
 - Produces: local self-hosted Multica enforcing the contract.
 
-- [ ] **Step 1: Format and run the complete backend suite**
+- [x] **Step 1: Format and run the complete backend suite**
 
 ```bash
 gofmt -w server/internal/handler/bpa_root_summary.go server/internal/handler/bpa_root_summary_test.go server/internal/handler/bpa_workflow.go server/internal/handler/bpa_workflow_test.go
@@ -255,7 +255,7 @@ cd server && go test ./...
 
 Expected: every command passes.
 
-- [ ] **Step 2: Rebuild only local Multica and prove health**
+- [x] **Step 2: Rebuild only local Multica and prove health**
 
 ```bash
 make selfhost-build
