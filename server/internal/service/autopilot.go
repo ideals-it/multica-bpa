@@ -368,7 +368,7 @@ func (s *AutopilotService) recoverOneDeferredRuntimeRun(ctx context.Context, run
 	if err != nil {
 		return false, fmt.Errorf("claim deferred runtime retry: %w", err)
 	}
-	ap, err := qtx.GetAutopilot(ctx, run.AutopilotID)
+	ap, err := qtx.GetAutopilotForRuntimeRetryAdmission(ctx, run.AutopilotID)
 	if err != nil {
 		return false, fmt.Errorf("load deferred autopilot: %w", err)
 	}

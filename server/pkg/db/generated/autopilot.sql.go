@@ -602,6 +602,38 @@ func (q *Queries) GetAutopilot(ctx context.Context, id pgtype.UUID) (Autopilot, 
 	return i, err
 }
 
+const getAutopilotForRuntimeRetryAdmission = `-- name: GetAutopilotForRuntimeRetryAdmission :one
+SELECT id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, retry_on_runtime_unavailable FROM autopilot
+WHERE id = $1
+FOR UPDATE
+`
+
+// Serializes same-Autopilot retry admission so concurrent workers cannot
+// enqueue multiple occurrences for the same scheduled day.
+func (q *Queries) GetAutopilotForRuntimeRetryAdmission(ctx context.Context, id pgtype.UUID) (Autopilot, error) {
+	row := q.db.QueryRow(ctx, getAutopilotForRuntimeRetryAdmission, id)
+	var i Autopilot
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.AssigneeID,
+		&i.Status,
+		&i.ExecutionMode,
+		&i.IssueTitleTemplate,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.LastRunAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AssigneeType,
+		&i.ProjectID,
+		&i.RetryOnRuntimeUnavailable,
+	)
+	return i, err
+}
+
 const getAutopilotInWorkspace = `-- name: GetAutopilotInWorkspace :one
 SELECT id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, retry_on_runtime_unavailable FROM autopilot
 WHERE id = $1 AND workspace_id = $2

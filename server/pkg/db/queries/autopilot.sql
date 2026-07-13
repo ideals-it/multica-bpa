@@ -40,6 +40,13 @@ ORDER BY a.created_at DESC;
 SELECT * FROM autopilot
 WHERE id = $1;
 
+-- name: GetAutopilotForRuntimeRetryAdmission :one
+-- Serializes same-Autopilot retry admission so concurrent workers cannot
+-- enqueue multiple occurrences for the same scheduled day.
+SELECT * FROM autopilot
+WHERE id = $1
+FOR UPDATE;
+
 -- name: GetAutopilotInWorkspace :one
 SELECT * FROM autopilot
 WHERE id = $1 AND workspace_id = $2;
