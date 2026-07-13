@@ -255,6 +255,42 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 	}
 }
 
+func TestBPAStandardWorkflowSkillTeachesLeadCenteredStages(t *testing.T) {
+	skill, ok := findSkill(t, "multica-bpa-standard-workflow")
+	if !ok {
+		return
+	}
+	fm, body, _ := splitFrontmatter(skill.Content)
+
+	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
+		t.Errorf("user-invocable = %q, want false (the workflow is loaded from task context)", got)
+	}
+	if got := strings.TrimSpace(fm["allowed-tools"]); got != "Bash(multica *)" {
+		t.Errorf("allowed-tools = %q, want Bash(multica *)", got)
+	}
+
+	mustContain := []string{
+		"Lead → specialist → Quality → Lead",
+		"--stage 1 --status todo",
+		"--stage 2 --status backlog",
+		"Team Lead owns the root issue",
+		"Quality is a separate child issue",
+		"Результат:",
+		"Перевірка:",
+		"Ризик:",
+		"Наступне:",
+		"references/standard-workflow-source-map.md",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("BPA standard workflow skill missing %q", want)
+		}
+	}
+	if !skillHasFile(skill, "references/standard-workflow-source-map.md") {
+		t.Error("BPA standard workflow skill is missing its source map")
+	}
+}
+
 func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 	skill, ok := findSkill(t, "multica-skill-importing")
 	if !ok {
