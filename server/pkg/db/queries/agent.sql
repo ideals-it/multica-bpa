@@ -881,6 +881,27 @@ WHERE id = (
 )
 RETURNING id, coalesced_comment_ids;
 
+-- name: AppendCommentToPendingTask :one
+-- Preserve the authorization-bearing trigger of a production review
+-- continuation while still planning later conversation for the same run. If
+-- the task was already claimed, completion reconciliation sees the appended
+-- planned ID missing from delivered_comment_ids and creates one follow-up.
+UPDATE agent_task_queue
+SET coalesced_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(array_append(coalesced_comment_ids, @new_comment_id::uuid)) AS e
+        WHERE e IS NOT NULL AND e <> agent_task_queue.trigger_comment_id
+    )
+WHERE id = (
+    SELECT t.id FROM agent_task_queue t
+    WHERE t.issue_id = @issue_id
+      AND t.agent_id = @agent_id
+      AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    ORDER BY t.created_at DESC
+    LIMIT 1
+)
+RETURNING id, coalesced_comment_ids;
+
 -- name: HasActiveTaskForIssueAndAgent :one
 -- MUL-4195: true when the (issue, agent) pair has any non-terminal task in a
 -- state whose completion will run completion reconciliation — queued,

@@ -100,6 +100,7 @@ UPDATE issue SET
     stage = sqlc.narg('stage'),
     updated_at = now()
 WHERE id = $1
+  AND (sqlc.narg('expected_updated_at')::timestamptz IS NULL OR updated_at = sqlc.narg('expected_updated_at')::timestamptz)
 RETURNING *;
 
 -- name: UpdateIssueStatus :one
@@ -333,6 +334,24 @@ UPDATE issue SET
     metadata = metadata || sqlc.arg('values')::jsonb,
     updated_at = now()
 WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+RETURNING *;
+
+-- name: SetBPAReviewCommentIfCurrent :one
+-- Binds a human review comment only to the exact production review snapshot
+-- that was visible when routing started. Unrelated Archivist metadata may
+-- change concurrently without invalidating the review, while a replacement
+-- scope/review cannot inherit an older comment.
+UPDATE issue SET
+    metadata = jsonb_set(metadata, ARRAY['bpa.review_comment_id'], to_jsonb(sqlc.arg('review_comment_id')::text)),
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND workspace_id = sqlc.arg('workspace_id')
+  AND status = 'in_review'
+  AND metadata ->> 'bpa.template' = 'production'
+  AND metadata ->> 'bpa.approval_status' = 'pending'
+  AND metadata ->> 'bpa.review_requested_at' = sqlc.arg('expected_review_requested_at')::text
+  AND metadata ->> 'bpa.scope_fingerprint' = sqlc.arg('expected_scope_fingerprint')::text
+  AND COALESCE(metadata ->> 'bpa.review_comment_id', '') = ''
 RETURNING *;
 
 -- name: DeleteIssueMetadataKey :one

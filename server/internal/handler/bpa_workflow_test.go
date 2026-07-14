@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -26,35 +25,7 @@ func TestStartBPAWorkflowRejectsMainIssueWithoutAgentLead(t *testing.T) {
 	}
 }
 
-func TestBPAApprovalCommentRecognizesClearDeploymentDirective(t *testing.T) {
-	content := "[@AT Team Lead](mention://agent/7188d30e-c3eb-4f5b-8acf-cb2377069bf7) Деплой"
-	if !isBPAApprovalComment(content) {
-		t.Fatalf("clear deployment directive %q must approve the pending Production scope", content)
-	}
-}
-
-func TestBPAApprovalCommentRejectsDeploymentQuestionOrNegation(t *testing.T) {
-	for _, content := range []string{"Що з деплоєм?", "Деплой не роби"} {
-		if isBPAApprovalComment(content) {
-			t.Fatalf("non-approval comment %q must not approve the pending Production scope", content)
-		}
-	}
-}
-
-func TestBPAApprovalEmojiAcceptsThumbsUpAndOKOnly(t *testing.T) {
-	for _, emoji := range []string{"👍", "👌"} {
-		if !isBPAApprovalEmoji(emoji) {
-			t.Fatalf("approval emoji %q was rejected", emoji)
-		}
-	}
-	for _, emoji := range []string{"❤️", "✅", "👎"} {
-		if isBPAApprovalEmoji(emoji) {
-			t.Fatalf("non-approval emoji %q was accepted", emoji)
-		}
-	}
-}
-
-func TestLeadApprovalReactionApprovesPendingProductionScope(t *testing.T) {
+func TestLeadReactionDoesNotBypassProductionReview(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -83,57 +54,501 @@ func TestLeadApprovalReactionApprovesPendingProductionScope(t *testing.T) {
 	}
 
 	comment := db.Comment{IssueID: issue.ID, AuthorType: "agent", AuthorID: parseUUID(leadID)}
-	updated, approved, err := testHandler.approveBPAReviewReaction(req, comment, "member", "👍")
-	if err != nil || !approved {
-		t.Fatalf("thumbs-up approval = approved:%t err:%v", approved, err)
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil || state.ApprovalStatus != bpa.ApprovalPending {
+		t.Fatalf("reaction must remain a normal signal, state = %#v, err=%v", state, err)
 	}
-	state, err := bpa.ParseState(parseIssueMetadata(updated.Metadata))
-	if err != nil || state.ApprovalStatus != bpa.ApprovalApproved || state.WaitingFor != bpa.WaitingForLead {
-		t.Fatalf("reaction approval state = %#v, err=%v", state, err)
-	}
+	_ = comment
 }
 
-func TestBPAWorkerCommentGetsLeadHandoffWhenNoOwnerMentioned(t *testing.T) {
+func TestBPAReviewOwnerCommentQueuesContinuationWithoutRecordingApproval(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	leadID := createHandlerTestAgent(t, "HandoffLead", []byte("[]"))
-	workerID := createHandlerTestAgent(t, "HandoffWorker", []byte("[]"))
-	issueID := insertAgentAssignedIssue(t, leadID, 92139, "worker handoff mention")
+	leadID := createHandlerTestAgent(t, "NaturalLanguageApprovalLead", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92142, "natural language review")
 	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{"bpa.template": "standard"})
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
 	if err != nil {
 		t.Fatal(err)
 	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template": string(bpa.TemplateProduction),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.beginBPAHumanReview(newRequest(http.MethodPost, "/", nil), issue); err != nil {
+		t.Fatal(err)
+	}
 
-	content := testHandler.ensureBPAWorkerHandoffMention(ctx, issue, parseUUID(workerID), pgtype.UUID{Valid: true}, "готово")
-	want := "mention://agent/" + leadID
-	if !strings.Contains(content, want) {
-		t.Fatalf("worker result must hand off to Lead, got %q", content)
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", CreateCommentRequest{
+		Content: "Так, але спочатку перевір резервну копію.",
+	})
+	req = withURLParam(req, "id", issueID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var queued int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND trigger_comment_id IS NOT NULL AND status = 'queued'
+	`, issueID, leadID).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Fatalf("owner review comment must queue one continuation, got %d", queued)
+	}
+
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil || state.ApprovalStatus != bpa.ApprovalPending || state.ReviewCommentID == "" {
+		t.Fatalf("comment must not be interpreted by the server, state=%#v err=%v", state, err)
 	}
 }
 
-func TestAgentOwnedRootWorkerCommentGetsLeadHandoffWithoutTemplate(t *testing.T) {
+func TestStaleReviewCommentCannotMarkAReplacementProductionReview(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	leadID := createHandlerTestAgent(t, "UntemplatedHandoffLead", []byte("[]"))
-	workerID := createHandlerTestAgent(t, "UntemplatedHandoffWorker", []byte("[]"))
-	issueID := insertAgentAssignedIssue(t, leadID, 92140, "untemplated worker handoff mention")
+	agentID := createHandlerTestAgent(t, "StaleReviewMarkerAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92153, "original production scope")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
 	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
 	if err != nil {
 		t.Fatal(err)
 	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template": string(bpa.TemplateProduction),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleReview, err := testHandler.beginBPAHumanReview(newRequest(http.MethodPost, "/", nil), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment, err := testHandler.Queries.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: staleReview.ID, WorkspaceID: staleReview.WorkspaceID,
+		AuthorType: "member", AuthorID: parseUUID(testUserID),
+		Content: "Погоджую лише початковий scope.", Type: "comment",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET trigger_comment_id = $1 WHERE id = $2`, comment.ID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	task, err := testHandler.Queries.GetAgentTask(ctx, parseUUID(taskID))
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	content := testHandler.ensureBPAWorkerHandoffMention(ctx, issue, parseUUID(workerID), pgtype.UUID{Valid: true}, "готово")
-	want := "mention://agent/" + leadID
-	if !strings.Contains(content, want) {
-		t.Fatalf("worker result on an agent-owned root must hand off to Lead, got %q", content)
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET title = 'replacement production scope', updated_at = clock_timestamp() WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	current, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.beginBPAHumanReview(newRequest(http.MethodPost, "/", nil), current); err != nil {
+		t.Fatal(err)
+	}
+
+	testHandler.markBPAReviewTrigger(ctx, staleReview, task, comment.ID)
+	current, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(current.Metadata))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReviewCommentID != "" {
+		t.Fatalf("stale review comment marked replacement review: %s", state.ReviewCommentID)
+	}
+}
+
+func TestDeletingCurrentReviewCommentAllowsAReplacementTrigger(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "DeletedReviewTriggerAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92154, "replace deleted review trigger")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template": string(bpa.TemplateProduction),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.beginBPAHumanReview(newRequest(http.MethodPost, "/", nil), issue); err != nil {
+		t.Fatal(err)
+	}
+
+	createReviewComment := func(content string) CommentResponse {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", CreateCommentRequest{Content: content})
+		req = withURLParam(req, "id", issueID)
+		testHandler.CreateComment(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		var response CommentResponse
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	first := createReviewComment("Перший коментар на погодження.")
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodDelete, "/api/issues/"+issueID+"/comments/"+first.ID, nil)
+	req = withURLParam(req, "id", issueID)
+	req = withURLParam(req, "commentId", first.ID)
+	testHandler.DeleteComment(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteComment: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	second := createReviewComment("Другий актуальний коментар на погодження.")
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReviewCommentID != second.ID {
+		t.Fatalf("replacement review trigger = %q, want %q", state.ReviewCommentID, second.ID)
+	}
+}
+
+func TestBPAReviewLaterCommentKeepsApprovalTriggerAndIsDelivered(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "ReviewCommentCoalesceAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92147, "review comment coalescing")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template": string(bpa.TemplateProduction),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.beginBPAHumanReview(newRequest(http.MethodPost, "/", nil), issue); err != nil {
+		t.Fatal(err)
+	}
+
+	createComment := func(content string) string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", CreateCommentRequest{Content: content})
+		req = withURLParam(req, "id", issueID)
+		testHandler.CreateComment(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		var response CommentResponse
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response.ID
+	}
+
+	approvalCommentID := createComment("Можна виконувати описаний деплой.")
+	laterCommentID := createComment("Перед запуском ще перевір поточну revision.")
+
+	var triggerID string
+	var coalescedIDs []string
+	if err := testPool.QueryRow(ctx, `
+		SELECT trigger_comment_id::text, coalesced_comment_ids::text[]
+		FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+	`, issueID, agentID).Scan(&triggerID, &coalescedIDs); err != nil {
+		t.Fatal(err)
+	}
+	if triggerID != approvalCommentID {
+		t.Fatalf("production review trigger = %s, want original owner comment %s", triggerID, approvalCommentID)
+	}
+	if len(coalescedIDs) != 1 || coalescedIDs[0] != laterCommentID {
+		t.Fatalf("coalesced comments = %v, want [%s]", coalescedIDs, laterCommentID)
+	}
+}
+
+func TestBacklogIssueCommentDoesNotStartAssignedAgent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "BacklogCommentAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92145, "backlog must remain parked")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'backlog', origin_type = 'autopilot' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", CreateCommentRequest{Content: "Це уточнення, не запуск."})
+	req = withURLParam(req, "id", issueID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var queued int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, issueID).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 0 {
+		t.Fatalf("backlog comment queued %d task(s), want 0", queued)
+	}
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issue.Status != "backlog" {
+		t.Fatalf("backlog issue status = %q, want backlog", issue.Status)
+	}
+}
+
+func TestOrdinaryBacklogIssueCommentKeepsNativeAssigneeRouting(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "NativeBacklogCommentAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92148, "ordinary backlog keeps native routing")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'backlog', origin_type = NULL, origin_id = NULL WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", CreateCommentRequest{Content: "Починай роботу над цією задачею."})
+	req = withURLParam(req, "id", issueID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var queued int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, issueID, agentID).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Fatalf("ordinary Backlog comment queued %d task(s), want native routing to queue 1", queued)
+	}
+}
+
+func TestBPAReviewContinuationCanEnterInProgressAfterAgentInterpretation(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	leadID := createHandlerTestAgent(t, "ReviewContinuationLead", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, leadID, 92143, "review continuation execution")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template": string(bpa.TemplateProduction),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.beginBPAHumanReview(newRequest(http.MethodPost, "/", nil), issue); err != nil {
+		t.Fatal(err)
+	}
+	comment, err := testHandler.Queries.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "member", AuthorID: parseUUID(testUserID),
+		Content: "Можна виконувати саме описаний деплой після перевірки резервної копії.", Type: "comment",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := createHandlerTestTaskForAgentOnIssue(t, leadID, issueID)
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET trigger_comment_id = $1 WHERE id = $2`, comment.ID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET metadata = metadata || jsonb_build_object('bpa.review_comment_id', $2::text) WHERE id = $1`, issueID, uuidToString(comment.ID)); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_progress"})
+	req = withURLParam(req, "id", issueID)
+	req.Header.Set("X-Agent-ID", leadID)
+	req.Header.Set("X-Task-ID", taskID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("legacy member headers must not impersonate review continuation, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_progress"})
+	req = withURLParam(req, "id", issueID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", leadID)
+	req.Header.Set("X-Task-ID", taskID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("interpreted review continuation must enter In Progress, got %d: %s", w.Code, w.Body.String())
+	}
+
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ApprovalStatus != bpa.ApprovalApproved || state.ApprovedScopeFingerprint != state.ScopeFingerprint {
+		t.Fatalf("continuation must approve only the current scope, got %#v", state)
+	}
+}
+
+func TestBPAReviewContinuationRejectsCommentFromPreviousReview(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "StaleReviewContinuationAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92146, "stale production review")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template":                   string(bpa.TemplateProduction),
+		"bpa.waiting_for":                string(bpa.WaitingForHumanApproval),
+		"bpa.scope_fingerprint":          bpa.TicketScopeFingerprint(issue.Title, ""),
+		"bpa.approval_status":            string(bpa.ApprovalPending),
+		"bpa.review_requested_at":        time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano),
+		"bpa.approved_scope_fingerprint": "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	comment, err := testHandler.Queries.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "member", AuthorID: parseUUID(testUserID),
+		Content: "Погоджую попередній scope.", Type: "comment",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET trigger_comment_id = $1 WHERE id = $2`, comment.ID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET metadata = metadata || jsonb_build_object('bpa.review_comment_id', $2::text) WHERE id = $1`, issueID, uuidToString(comment.ID)); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_progress"})
+	req = withURLParam(req, "id", issueID)
+	req.Header.Set("X-Agent-ID", agentID)
+	req.Header.Set("X-Task-ID", taskID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale review continuation: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestBPAReviewContinuationRejectsCommentWrittenBeforeReviewWasVisible(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "PreReviewCommentAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92150, "pre-review production comment")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment, err := testHandler.Queries.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "member", AuthorID: parseUUID(testUserID),
+		Content: "Цей коментар написаний до появи review.", Type: "comment",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the narrow race: the in-memory review timestamp was sampled,
+	// then the comment landed, and only afterward did review state become
+	// visible through the persisted issue update timestamp.
+	if _, err := testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template":                   string(bpa.TemplateProduction),
+		"bpa.waiting_for":                string(bpa.WaitingForHumanApproval),
+		"bpa.scope_fingerprint":          bpa.TicketScopeFingerprint(issue.Title, ""),
+		"bpa.approval_status":            string(bpa.ApprovalPending),
+		"bpa.review_requested_at":        comment.CreatedAt.Time.Add(-time.Second).Format(time.RFC3339Nano),
+		"bpa.approved_scope_fingerprint": "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET trigger_comment_id = $1 WHERE id = $2`, comment.ID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_progress"})
+	req = withURLParam(req, "id", issueID)
+	req.Header.Set("X-Agent-ID", agentID)
+	req.Header.Set("X-Task-ID", taskID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("pre-review comment continuation: expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -251,6 +666,40 @@ func TestAgentReviewTransitionKeepsApprovedUnchangedProductionScope(t *testing.T
 	}
 }
 
+func TestApprovedProductionScopeCannotChangeAfterWorkResumes(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "ApprovedScopeChangeAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92144, "approved production scope")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := bpa.TicketScopeFingerprint(issue.Title, "")
+	if _, err := testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template":                   string(bpa.TemplateProduction),
+		"bpa.waiting_for":                string(bpa.WaitingForLead),
+		"bpa.scope_fingerprint":          scope,
+		"bpa.approval_status":            string(bpa.ApprovalApproved),
+		"bpa.approved_scope_fingerprint": scope,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"description": "expanded production scope"})
+	req = withURLParam(req, "id", issueID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("change approved production scope: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestPendingProductionReviewCannotLeaveReviewBeforeApproval(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -280,6 +729,248 @@ func TestPendingProductionReviewCannotLeaveReviewBeforeApproval(t *testing.T) {
 	testHandler.UpdateIssue(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("leave pending review: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "blocked"})
+	req = withURLParam(req, "id", issueID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("pending review to Blocked: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProductionReviewContinuationCannotChangeScopeWhileResuming(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "ReviewScopeResumeAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92149, "reviewed production scope")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template": string(bpa.TemplateProduction),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, err = testHandler.beginBPAHumanReview(newRequest(http.MethodPost, "/", nil), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment, err := testHandler.Queries.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "member", AuthorID: parseUUID(testUserID),
+		Content: "Погоджую описану задачу без зміни scope.", Type: "comment",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET trigger_comment_id = $1 WHERE id = $2`, comment.ID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET metadata = metadata || jsonb_build_object('bpa.review_comment_id', $2::text) WHERE id = $1`, issueID, uuidToString(comment.ID)); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
+		"status":      "in_progress",
+		"description": "new production action that was not reviewed",
+	})
+	req = withURLParam(req, "id", issueID)
+	req.Header.Set("X-Agent-ID", agentID)
+	req.Header.Set("X-Task-ID", taskID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("resume with changed scope: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	updated, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != "in_review" || updated.Description.Valid {
+		t.Fatalf("rejected scope change persisted status=%q description=%q", updated.Status, updated.Description.String)
+	}
+}
+
+func TestOrdinaryInReviewIssueCanChangeScopeWhileLeavingReview(t *testing.T) {
+	ctx := context.Background()
+	issueID := createMetadataTestIssue(t, "ordinary review scope change")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
+		"status": "in_progress", "description": "ordinary reviewed scope",
+	})
+	req = withURLParam(req, "id", issueID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ordinary In Review scope change: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPendingProductionReviewCannotBeBatchAdvancedOrGitHubCompleted(t *testing.T) {
+	ctx := context.Background()
+	issueID := createMetadataTestIssue(t, "pending production batch guard")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template":          string(bpa.TemplateProduction),
+		"bpa.waiting_for":       string(bpa.WaitingForHumanApproval),
+		"bpa.scope_fingerprint": bpa.TicketScopeFingerprint(issue.Title, ""),
+		"bpa.approval_status":   string(bpa.ApprovalPending),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPost, "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{issueID}, "updates": map[string]any{"status": "in_progress"},
+	})
+	testHandler.BatchUpdateIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result struct {
+		Updated int `json:"updated"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Updated != 0 {
+		t.Fatalf("pending review batch advanced %d issues, want 0", result.Updated)
+	}
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testHandler.advanceIssueToDone(ctx, issue, testWorkspaceID)
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issue.Status != "in_review" {
+		t.Fatalf("GitHub completion moved pending review to %q", issue.Status)
+	}
+}
+
+func TestBatchUpdateCannotChangeProductionScopeAcrossApprovalGate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	t.Run("pending review", func(t *testing.T) {
+		issueID := createMetadataTestIssue(t, "pending production batch scope")
+		issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+			"bpa.template":          string(bpa.TemplateProduction),
+			"bpa.waiting_for":       string(bpa.WaitingForHumanApproval),
+			"bpa.scope_fingerprint": bpa.TicketScopeFingerprint(issue.Title, ""),
+			"bpa.approval_status":   string(bpa.ApprovalPending),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+			t.Fatal(err)
+		}
+
+		w := httptest.NewRecorder()
+		req := newRequest(http.MethodPost, "/api/issues/batch-update", map[string]any{
+			"issue_ids": []string{issueID}, "updates": map[string]any{"description": "unreviewed production scope"},
+		})
+		testHandler.BatchUpdateIssues(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("batch update: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		updated, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err := bpa.ParseState(parseIssueMetadata(updated.Metadata))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantScope := bpa.TicketScopeFingerprint(updated.Title, "unreviewed production scope")
+		if updated.Description.String != "unreviewed production scope" || state.ScopeFingerprint != wantScope ||
+			state.ApprovalStatus != bpa.ApprovalPending || state.ReviewCommentID != "" {
+			t.Fatalf("batch scope edit did not start a fresh review: issue=%#v state=%#v", updated, state)
+		}
+	})
+
+	t.Run("approved execution", func(t *testing.T) {
+		issueID := createMetadataTestIssue(t, "approved production batch scope")
+		issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := bpa.TicketScopeFingerprint(issue.Title, "")
+		if _, err := testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+			"bpa.template":                   string(bpa.TemplateProduction),
+			"bpa.waiting_for":                string(bpa.WaitingForLead),
+			"bpa.scope_fingerprint":          scope,
+			"bpa.approved_scope_fingerprint": scope,
+			"bpa.approval_status":            string(bpa.ApprovalApproved),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, issueID); err != nil {
+			t.Fatal(err)
+		}
+
+		w := httptest.NewRecorder()
+		req := newRequest(http.MethodPost, "/api/issues/batch-update", map[string]any{
+			"issue_ids": []string{issueID}, "updates": map[string]any{"title": "expanded production scope"},
+		})
+		testHandler.BatchUpdateIssues(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("batch update: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		updated, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated.Title != issue.Title {
+			t.Fatalf("batch changed approved production scope to %q", updated.Title)
+		}
+	})
+}
+
+func TestUpdateIssueCompareAndSwapRejectsStaleSnapshot(t *testing.T) {
+	ctx := context.Background()
+	issueID := createMetadataTestIssue(t, "optimistic issue update")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET title = 'concurrent title', updated_at = clock_timestamp() WHERE id = $1`, issue.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = testHandler.Queries.UpdateIssue(ctx, db.UpdateIssueParams{
+		ID: issue.ID, Description: pgtype.Text{String: "stale update", Valid: true},
+		AssigneeType: issue.AssigneeType, AssigneeID: issue.AssigneeID, StartDate: issue.StartDate,
+		DueDate: issue.DueDate, ParentIssueID: issue.ParentIssueID, ProjectID: issue.ProjectID,
+		Stage: issue.Stage, ExpectedUpdatedAt: issue.UpdatedAt,
+	})
+	if err == nil {
+		t.Fatal("stale UpdateIssue snapshot unexpectedly overwrote concurrent scope")
 	}
 }
 
@@ -323,7 +1014,7 @@ func TestBPARootResolvesThroughNestedChildren(t *testing.T) {
 	}
 }
 
-func TestApproveCommentApprovesCurrentTicketScope(t *testing.T) {
+func TestProductionReviewStartsWithPendingScope(t *testing.T) {
 	issueID := createMetadataTestIssue(t, "scope approval")
 	ctx := context.Background()
 	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
@@ -344,13 +1035,9 @@ func TestApproveCommentApprovesCurrentTicketScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue, err = testHandler.approveBPAReviewComment(req, issue, "member", "Погоджую")
-	if err != nil {
-		t.Fatal(err)
-	}
 	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
-	if err != nil || state.ApprovalStatus != bpa.ApprovalApproved || state.ApprovedScopeFingerprint != state.ScopeFingerprint {
-		t.Fatalf("approval state = %#v, err = %v", state, err)
+	if err != nil || state.ApprovalStatus != bpa.ApprovalPending || state.ApprovedScopeFingerprint != "" {
+		t.Fatalf("review state = %#v, err = %v", state, err)
 	}
 }
 
@@ -393,7 +1080,7 @@ func TestBPARootCannotCloseWhileChildIsOpen(t *testing.T) {
 	}
 }
 
-func TestBPARootCompletionRequiresLeadFinalSummary(t *testing.T) {
+func TestBPARootCompletionDoesNotRequireLeadSummary(t *testing.T) {
 	ctx := context.Background()
 	issueID := createMetadataTestIssue(t, "BPA root needs final summary")
 	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
@@ -417,31 +1104,12 @@ func TestBPARootCompletionRequiresLeadFinalSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := testHandler.validateBPACompletion(ctx, issue); err == nil || !strings.Contains(err.Error(), "final root summary") {
-		t.Fatalf("completion without final summary error = %v, want final summary conflict", err)
-	}
-
-	_, err = testHandler.Queries.CreateComment(ctx, db.CreateCommentParams{
-		IssueID:     issue.ID,
-		WorkspaceID: issue.WorkspaceID,
-		AuthorType:  "agent",
-		AuthorID:    parseUUID(leadID),
-		Content: "**Що було не так:** transient Google API error became 500\n\n" +
-			"**Що змінили:** return 503 after retries\n\n" +
-			"**Що перевірили:** 14 tests passed\n\n" +
-			"**Результат:** deploy is ready\n\n" +
-			"**Ризик / наступне:** немає відомого",
-		Type: "comment",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := testHandler.validateBPACompletion(ctx, issue); err != nil {
-		t.Fatalf("completion with final summary: %v", err)
+		t.Fatalf("completion without a prescribed final summary: %v", err)
 	}
 }
 
-func TestBPAChildCannotCloseWithoutCommitEvidence(t *testing.T) {
+func TestBPAChildCanCloseWithoutServerCommitMetadata(t *testing.T) {
 	ctx := context.Background()
 	parentID := createMetadataTestIssue(t, "BPA child requires commit evidence")
 	parent, err := testHandler.Queries.GetIssue(ctx, parseUUID(parentID))
@@ -473,12 +1141,12 @@ func TestBPAChildCannotCloseWithoutCommitEvidence(t *testing.T) {
 	update := newRequest("PUT", "/api/issues/"+child.ID, map[string]any{"status": "done"})
 	update = withURLParam(update, "id", child.ID)
 	testHandler.UpdateIssue(w, update)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestBatchUpdateCannotCloseBPAChildWithoutCommitEvidence(t *testing.T) {
+func TestBatchUpdateCanCloseBPAChildWithoutServerCommitMetadata(t *testing.T) {
 	ctx := context.Background()
 	parentID := createMetadataTestIssue(t, "BPA batch child requires commit evidence")
 	parent, err := testHandler.Queries.GetIssue(ctx, parseUUID(parentID))
@@ -521,12 +1189,12 @@ func TestBatchUpdateCannotCloseBPAChildWithoutCommitEvidence(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Updated != 0 {
-		t.Fatalf("batch must not close BPA child without evidence, updated=%d", result.Updated)
+	if result.Updated != 1 {
+		t.Fatalf("batch should close BPA child without server commit metadata, updated=%d", result.Updated)
 	}
 }
 
-func TestGitHubMergeCannotCloseBPAChildWithoutCommitEvidence(t *testing.T) {
+func TestGitHubMergeCanCloseBPAChildWithoutServerCommitMetadata(t *testing.T) {
 	ctx := context.Background()
 	parentID := createMetadataTestIssue(t, "BPA GitHub child requires commit evidence")
 	parent, err := testHandler.Queries.GetIssue(ctx, parseUUID(parentID))
@@ -563,8 +1231,8 @@ func TestGitHubMergeCannotCloseBPAChildWithoutCommitEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status == "done" {
-		t.Fatal("GitHub merge must not close BPA child without evidence")
+	if updated.Status != "done" {
+		t.Fatalf("GitHub merge should close BPA child without server commit metadata, got %q", updated.Status)
 	}
 }
 

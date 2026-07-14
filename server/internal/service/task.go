@@ -63,7 +63,7 @@ type TaskService struct {
 // CanEnqueueIssue is the one policy check shared by direct assignment and
 // mention dispatch. It fails closed for malformed BPA metadata so a damaged
 // production gate cannot accidentally become an allow decision.
-func (s *TaskService) CanEnqueueIssue(ctx context.Context, issue db.Issue, targetAgentID pgtype.UUID) error {
+func (s *TaskService) CanEnqueueIssue(ctx context.Context, issue db.Issue, targetAgentID pgtype.UUID, triggerCommentID ...pgtype.UUID) error {
 	workflowIssue, err := s.bpaWorkflowRoot(ctx, issue)
 	if err != nil {
 		return fmt.Errorf("%w: %v", bpa.ErrHumanApprovalRequired, err)
@@ -87,8 +87,8 @@ func (s *TaskService) CanEnqueueIssue(ctx context.Context, issue db.Issue, targe
 			return bpa.ErrHumanApprovalRequired
 		}
 	}
-	// Before approval, only the root Team Lead coordination task may run to
-	// prepare the plan. Production children are execution work and are blocked.
+	// Before approval, only the root assignee may run to prepare the plan.
+	// Production children are execution work and are blocked.
 	if state.Template == bpa.TemplateProduction && !issue.ParentIssueID.Valid && issue.Status != "in_review" &&
 		state.ScopeFingerprint == "" && state.WaitingFor == bpa.WaitingForLead {
 		if s.isRootLead(ctx, issue, targetAgentID) {
@@ -96,10 +96,42 @@ func (s *TaskService) CanEnqueueIssue(ctx context.Context, issue db.Issue, targe
 		}
 		return bpa.ErrHumanApprovalRequired
 	}
+	if state.Template == bpa.TemplateProduction && s.isProductionReviewCommentContinuation(ctx, issue, workflowIssue, state, targetAgentID, triggerCommentID) {
+		return nil
+	}
 	if decision := bpa.CanDispatch(state); !decision.Allowed {
 		return decision.Err
 	}
 	return nil
+}
+
+// isProductionReviewCommentContinuation permits exactly one pending-review
+// continuation: the root assignee receives an owner/admin comment on the root
+// ticket. It intentionally does not inspect the comment's wording; that
+// semantic decision belongs to the resumed agent.
+func (s *TaskService) isProductionReviewCommentContinuation(ctx context.Context, issue, root db.Issue, state bpa.State, targetAgentID pgtype.UUID, triggerCommentIDs []pgtype.UUID) bool {
+	if issue.ParentIssueID.Valid || issue.Status != "in_review" || state.ApprovalStatus != bpa.ApprovalPending ||
+		state.ScopeFingerprint == "" || state.WaitingFor != bpa.WaitingForHumanApproval ||
+		!s.isRootLead(ctx, root, targetAgentID) || len(triggerCommentIDs) == 0 || !triggerCommentIDs[0].Valid || s.Queries == nil {
+		return false
+	}
+	comment, err := s.Queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{
+		ID: triggerCommentIDs[0], WorkspaceID: root.WorkspaceID,
+	})
+	if err != nil || comment.IssueID != root.ID || comment.AuthorType != "member" || !comment.AuthorID.Valid {
+		return false
+	}
+	if state.ReviewRequestedAt == "" {
+		return false
+	}
+	reviewRequestedAt, err := time.Parse(time.RFC3339Nano, state.ReviewRequestedAt)
+	if err != nil || comment.CreatedAt.Time.Before(reviewRequestedAt) {
+		return false
+	}
+	member, err := s.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		UserID: comment.AuthorID, WorkspaceID: root.WorkspaceID,
+	})
+	return err == nil && (member.Role == "owner" || member.Role == "admin")
 }
 
 func (s *TaskService) bpaWorkflowRoot(ctx context.Context, issue db.Issue) (db.Issue, error) {
@@ -831,7 +863,7 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 }
 
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string) (db.AgentTaskQueue, error) {
-	if err := s.CanEnqueueIssue(ctx, issue, issue.AssigneeID); err != nil {
+	if err := s.CanEnqueueIssue(ctx, issue, issue.AssigneeID, triggerCommentID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	if !issue.AssigneeID.Valid {
@@ -935,7 +967,7 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 }
 
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string) (db.AgentTaskQueue, error) {
-	if err := s.CanEnqueueIssue(ctx, issue, agentID); err != nil {
+	if err := s.CanEnqueueIssue(ctx, issue, agentID, triggerCommentID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)

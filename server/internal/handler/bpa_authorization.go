@@ -54,7 +54,8 @@ func (h *Handler) bpaActorIsCoordinator(ctx context.Context, root db.Issue, acto
 }
 
 // requireBPACoordination rejects agent-side routing mutations unless they come
-// from the configured Lead. Human members retain normal board control.
+// from the agent assigned to the BPA root. Human members retain normal board
+// control.
 func (h *Handler) requireBPACoordination(ctx context.Context, issue db.Issue, actorType, actorID string) error {
 	if actorType != "agent" {
 		return nil
@@ -67,7 +68,7 @@ func (h *Handler) requireBPACoordination(ctx context.Context, issue db.Issue, ac
 		return fmt.Errorf("the configured BPA Archivist is read-only")
 	}
 	if !h.bpaActorIsCoordinator(ctx, root, actorID) {
-		return fmt.Errorf("only the BPA Team Lead can route or close this workflow task")
+		return fmt.Errorf("only the agent assigned to the BPA root can route or close this workflow task")
 	}
 	return nil
 }
@@ -87,7 +88,7 @@ func (h *Handler) requireBPAIssueWrite(ctx context.Context, issue db.Issue, acto
 		return fmt.Errorf("the configured BPA Archivist is read-only")
 	}
 	if coordination && !h.bpaActorIsCoordinator(ctx, root, actorID) {
-		return fmt.Errorf("only the BPA Team Lead can route or close this workflow task")
+		return fmt.Errorf("only the agent assigned to the BPA root can route or close this workflow task")
 	}
 	return nil
 }

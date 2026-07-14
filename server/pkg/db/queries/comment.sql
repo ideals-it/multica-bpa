@@ -422,7 +422,19 @@ WHERE parent_id = @parent_id AND author_type = 'agent' AND author_id = @agent_id
 
 -- name: DeleteComment :exec
 -- Defense-in-depth: workspace_id is a SQL-layer tenant guard. See DeleteIssue.
-DELETE FROM comment WHERE id = $1 AND workspace_id = $2;
+-- If this comment is the active production-review trigger, clear that binding
+-- in the same statement so a replacement owner/admin comment can be routed.
+WITH deleted AS (
+    DELETE FROM comment
+    WHERE comment.id = $1 AND comment.workspace_id = $2
+    RETURNING comment.id, comment.issue_id
+)
+UPDATE issue
+SET metadata = jsonb_set(metadata, ARRAY['bpa.review_comment_id'], to_jsonb(''::text)),
+    updated_at = now()
+FROM deleted
+WHERE issue.id = deleted.issue_id
+  AND issue.metadata ->> 'bpa.review_comment_id' = deleted.id::text;
 
 -- name: ResolveComment :one
 -- Idempotent: re-resolving keeps the original resolved_at + resolver. Always

@@ -11,6 +11,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const appendCommentToPendingTask = `-- name: AppendCommentToPendingTask :one
+UPDATE agent_task_queue
+SET coalesced_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(array_append(coalesced_comment_ids, $1::uuid)) AS e
+        WHERE e IS NOT NULL AND e <> agent_task_queue.trigger_comment_id
+    )
+WHERE id = (
+    SELECT t.id FROM agent_task_queue t
+    WHERE t.issue_id = $2
+      AND t.agent_id = $3
+      AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    ORDER BY t.created_at DESC
+    LIMIT 1
+)
+RETURNING id, coalesced_comment_ids
+`
+
+type AppendCommentToPendingTaskParams struct {
+	NewCommentID pgtype.UUID `json:"new_comment_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	AgentID      pgtype.UUID `json:"agent_id"`
+}
+
+type AppendCommentToPendingTaskRow struct {
+	ID                  pgtype.UUID   `json:"id"`
+	CoalescedCommentIds []pgtype.UUID `json:"coalesced_comment_ids"`
+}
+
+// Preserve the authorization-bearing trigger of a production review
+// continuation while still planning later conversation for the same run. If
+// the task was already claimed, completion reconciliation sees the appended
+// planned ID missing from delivered_comment_ids and creates one follow-up.
+func (q *Queries) AppendCommentToPendingTask(ctx context.Context, arg AppendCommentToPendingTaskParams) (AppendCommentToPendingTaskRow, error) {
+	row := q.db.QueryRow(ctx, appendCommentToPendingTask, arg.NewCommentID, arg.IssueID, arg.AgentID)
+	var i AppendCommentToPendingTaskRow
+	err := row.Scan(&i.ID, &i.CoalescedCommentIds)
+	return i, err
+}
+
 const archiveAgent = `-- name: ArchiveAgent :one
 UPDATE agent SET archived_at = now(), archived_by = $2, updated_at = now()
 WHERE id = $1

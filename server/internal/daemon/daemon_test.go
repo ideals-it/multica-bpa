@@ -464,7 +464,7 @@ func TestBuildPromptCommentTriggered(t *testing.T) {
 	for _, want := range []string{
 		issueID,
 		commentContent,
-		"Focus on THIS comment",
+		"Read it together with every additional comment",
 		commentID,
 		"multica issue comment add " + issueID + " --parent " + commentID,
 		"do NOT reuse --parent values from previous turns",
@@ -528,7 +528,7 @@ func TestBuildPromptCommentTriggeredByMember(t *testing.T) {
 		Agent:                 &AgentData{Name: "Test"},
 	}, "claude")
 
-	if !strings.Contains(prompt, "A user just left a new comment") {
+	if !strings.Contains(prompt, "A user left the comment that initiated this run") {
 		t.Fatalf("member-triggered prompt should label the author as a user\n---\n%s", prompt)
 	}
 	if strings.Contains(prompt, "Another agent") {

@@ -2483,14 +2483,15 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-fill nullable fields (bare sqlc.narg) with current values
 	params := db.UpdateIssueParams{
-		ID:            prevIssue.ID,
-		AssigneeType:  prevIssue.AssigneeType,
-		AssigneeID:    prevIssue.AssigneeID,
-		StartDate:     prevIssue.StartDate,
-		DueDate:       prevIssue.DueDate,
-		ParentIssueID: prevIssue.ParentIssueID,
-		ProjectID:     prevIssue.ProjectID,
-		Stage:         prevIssue.Stage,
+		ID:                prevIssue.ID,
+		AssigneeType:      prevIssue.AssigneeType,
+		AssigneeID:        prevIssue.AssigneeID,
+		StartDate:         prevIssue.StartDate,
+		DueDate:           prevIssue.DueDate,
+		ParentIssueID:     prevIssue.ParentIssueID,
+		ProjectID:         prevIssue.ProjectID,
+		Stage:             prevIssue.Stage,
+		ExpectedUpdatedAt: prevIssue.UpdatedAt,
 	}
 
 	// COALESCE fields — only set when explicitly provided
@@ -2642,6 +2643,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if err := h.validateBPAApprovedScopeUpdate(prevIssue, req); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if req.Status != nil && *req.Status == "done" && prevIssue.Status != "done" {
 		if err := h.validateBPACompletion(r.Context(), prevIssue); err != nil {
 			slog.Warn("validate BPA completion failed", append(logger.RequestAttrs(r), "error", err, "issue_id", id)...)
@@ -2649,9 +2654,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// A Production root stays visibly In Review until a member approval comment
-	// records the current scope. Moving the card manually must not imply an
-	// approval or leave it In Progress while dispatch remains blocked.
+	// A Production root stays visibly In Review until a human comment resumes
+	// the assigned agent's review task. The server never infers approval from
+	// words or reactions: the agent interprets the full comment and can leave
+	// review only through that owner/admin-comment continuation.
+	approvalContinuation := false
 	if req.Status != nil && prevIssue.Status == "in_review" && *req.Status != "in_review" && !prevIssue.ParentIssueID.Valid {
 		state, stateErr := bpa.ParseState(parseIssueMetadata(prevIssue.Metadata))
 		if stateErr != nil {
@@ -2659,18 +2666,86 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if state.Template == bpa.TemplateProduction && state.ApprovalStatus == bpa.ApprovalPending {
-			writeError(w, http.StatusConflict, "a human approval comment is required before leaving In Review")
-			return
+			if *req.Status != "in_progress" {
+				writeError(w, http.StatusConflict, "pending production review can only resume into In Progress")
+				return
+			}
+			if !h.isBPAProductionReviewContinuation(r, prevIssue, actorType, actorID) {
+				writeError(w, http.StatusConflict, "an owner or admin comment continuation is required before leaving In Review")
+				return
+			}
+			approvalContinuation = true
 		}
 	}
 
-	issue, err := h.Queries.UpdateIssue(r.Context(), params)
-	if err != nil {
-		slog.Warn("update issue failed", append(logger.RequestAttrs(r), "error", err, "issue_id", id, "workspace_id", workspaceID)...)
-		writeError(w, http.StatusInternalServerError, "failed to update issue: "+err.Error())
+	reviewValues, reviewErr := h.bpaReviewValuesForIssueUpdate(r.Context(), prevIssue, req, actorType)
+	if reviewErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to prepare BPA review")
 		return
 	}
 
+	var issue db.Issue
+	if approvalContinuation {
+		description := ""
+		if prevIssue.Description.Valid {
+			description = prevIssue.Description.String
+		}
+		scope := bpa.TicketScopeFingerprint(prevIssue.Title, description)
+		approvalValues, marshalErr := json.Marshal(map[string]any{
+			"bpa.scope_fingerprint":          scope,
+			"bpa.approved_scope_fingerprint": scope,
+			"bpa.approval_status":            string(bpa.ApprovalApproved),
+			"bpa.waiting_for":                string(bpa.WaitingForLead),
+		})
+		if marshalErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to encode production review continuation")
+			return
+		}
+		tx, beginErr := h.TxStarter.Begin(r.Context())
+		if beginErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to begin production review continuation")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		qtx := h.Queries.WithTx(tx)
+		issue, err = qtx.UpdateIssue(r.Context(), params)
+		if err == nil {
+			issue, err = qtx.SetIssueMetadataValues(r.Context(), db.SetIssueMetadataValuesParams{
+				ID: prevIssue.ID, WorkspaceID: prevIssue.WorkspaceID, Values: approvalValues,
+			})
+		}
+		if err == nil {
+			err = tx.Commit(r.Context())
+		}
+	} else if len(reviewValues) > 0 {
+		tx, beginErr := h.TxStarter.Begin(r.Context())
+		if beginErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to begin BPA review")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		qtx := h.Queries.WithTx(tx)
+		issue, err = qtx.UpdateIssue(r.Context(), params)
+		if err == nil {
+			issue, err = qtx.SetIssueMetadataValues(r.Context(), db.SetIssueMetadataValuesParams{
+				ID: prevIssue.ID, WorkspaceID: prevIssue.WorkspaceID, Values: reviewValues,
+			})
+		}
+		if err == nil {
+			err = tx.Commit(r.Context())
+		}
+	} else {
+		issue, err = h.Queries.UpdateIssue(r.Context(), params)
+	}
+	if err != nil {
+		slog.Warn("update issue failed", append(logger.RequestAttrs(r), "error", err, "issue_id", id, "workspace_id", workspaceID)...)
+		if isNotFound(err) {
+			writeError(w, http.StatusConflict, "issue changed while this update was being applied; reload and try again")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to update issue: "+err.Error())
+		return
+	}
 	if len(attachmentIDs) > 0 {
 		h.linkAttachmentsByIssueIDs(r.Context(), issue.ID, issue.WorkspaceID, attachmentIDs)
 	}
@@ -2696,51 +2771,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	prevDueDate := dateToPtr(prevIssue.DueDate)
 	dueDateChanged := prevDueDate != resp.DueDate && (prevDueDate == nil) != (resp.DueDate == nil) ||
 		(prevDueDate != nil && resp.DueDate != nil && *prevDueDate != *resp.DueDate)
-
-	// An agent moving an untemplated root to In Review is requesting a concrete
-	// human decision. BPA reserves that agent-owned transition for production
-	// scope, so initialize the native production gate instead of leaving a
-	// prompt-only review that an approval comment cannot protect.
-	if issue.Status == "in_review" && statusChanged && actorType == "agent" && !issue.ParentIssueID.Valid &&
-		issue.AssigneeType.String == "agent" {
-		state, stateErr := bpa.ParseState(parseIssueMetadata(issue.Metadata))
-		if stateErr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to parse BPA workflow")
-			return
-		}
-		if !state.Enabled() {
-			if initialized, initErr := h.setBPAWorkflowValues(r, issue, map[string]any{
-				"bpa.template":    string(bpa.TemplateProduction),
-				"bpa.waiting_for": string(bpa.WaitingForLead),
-			}); initErr != nil {
-				writeError(w, http.StatusInternalServerError, "failed to start BPA production workflow")
-				return
-			} else {
-				issue = initialized
-				resp = issueToResponse(issue, prefix)
-			}
-		}
-	}
-
-	// A Production root entering In Review requests approval for the ticket's
-	// current scope. An already approved, unchanged scope stays approved: an
-	// agent status update must not create an approval loop.
-	if issue.Status == "in_review" && (statusChanged || titleChanged || descriptionChanged) {
-		shouldBeginReview, reviewCheckErr := h.shouldBeginBPAHumanReview(issue)
-		if reviewCheckErr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to inspect BPA review")
-			return
-		}
-		if shouldBeginReview {
-			reviewedIssue, reviewErr := h.beginBPAHumanReview(r, issue)
-			if reviewErr != nil {
-				writeError(w, http.StatusInternalServerError, "failed to prepare BPA review")
-				return
-			}
-			issue = reviewedIssue
-			resp = issueToResponse(issue, prefix)
-		}
-	}
 
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, map[string]any{
 		"issue":               resp,
@@ -2811,6 +2841,119 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// bpaReviewValuesForIssueUpdate prepares the complete pending-review state
+// before UpdateIssue writes anything. The caller persists these values and the
+// issue update in one transaction, so the board can never expose In Review
+// without the matching production scope gate.
+func (h *Handler) bpaReviewValuesForIssueUpdate(ctx context.Context, issue db.Issue, req UpdateIssueRequest, actorType string) ([]byte, error) {
+	resultStatus := issue.Status
+	if req.Status != nil {
+		resultStatus = *req.Status
+	}
+	if issue.ParentIssueID.Valid || resultStatus != "in_review" ||
+		(req.Status == nil && req.Title == nil && req.Description == nil) {
+		return nil, nil
+	}
+
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil {
+		return nil, err
+	}
+	if !state.Enabled() {
+		if actorType != "agent" || req.Status == nil || *req.Status != "in_review" || issue.AssigneeType.String != "agent" {
+			return nil, nil
+		}
+		state.Template = bpa.TemplateProduction
+	}
+	if state.Template != bpa.TemplateProduction {
+		return nil, nil
+	}
+
+	title := issue.Title
+	if req.Title != nil {
+		title = *req.Title
+	}
+	description := ""
+	if issue.Description.Valid {
+		description = issue.Description.String
+	}
+	if req.Description != nil {
+		description = *req.Description
+	}
+	scope := bpa.TicketScopeFingerprint(title, description)
+	if state.ApprovalStatus == bpa.ApprovalApproved && state.ApprovedScopeFingerprint == scope {
+		return nil, nil
+	}
+	reviewRequestedAt, err := h.bpaReviewTimestamp(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(map[string]any{
+		"bpa.template":                   string(state.Template),
+		"bpa.scope_fingerprint":          scope,
+		"bpa.approved_scope_fingerprint": "",
+		"bpa.approval_status":            string(bpa.ApprovalPending),
+		"bpa.review_requested_at":        reviewRequestedAt.Format(time.RFC3339Nano),
+		"bpa.review_comment_id":          "",
+		"bpa.waiting_for":                string(bpa.WaitingForHumanApproval),
+	})
+}
+
+// validateBPAApprovedScopeUpdate keeps a task-level production approval bound
+// to the exact title and description the human reviewed. While the ticket is
+// still In Review, a material edit may reset it to pending review below. Once
+// execution has resumed, the agent must finish the approved scope or create a
+// follow-up ticket instead of silently expanding it.
+func (h *Handler) validateBPAApprovedScopeUpdate(issue db.Issue, req UpdateIssueRequest) error {
+	if issue.ParentIssueID.Valid || (req.Title == nil && req.Description == nil) {
+		return nil
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil || state.Template != bpa.TemplateProduction {
+		return err
+	}
+	if issue.Status == "in_review" {
+		if req.Status == nil || *req.Status == "in_review" {
+			return nil
+		}
+		currentDescription := ""
+		if issue.Description.Valid {
+			currentDescription = issue.Description.String
+		}
+		newTitle := issue.Title
+		if req.Title != nil {
+			newTitle = *req.Title
+		}
+		newDescription := currentDescription
+		if req.Description != nil {
+			newDescription = *req.Description
+		}
+		if bpa.TicketScopeFingerprint(newTitle, newDescription) != bpa.TicketScopeFingerprint(issue.Title, currentDescription) {
+			return fmt.Errorf("production scope cannot change while leaving In Review; update the scope and request review again")
+		}
+		return nil
+	}
+	if state.ApprovalStatus != bpa.ApprovalApproved {
+		return nil
+	}
+	title := issue.Title
+	if req.Title != nil {
+		title = *req.Title
+	}
+	description := ""
+	if issue.Description.Valid {
+		description = issue.Description.String
+	}
+	if req.Description != nil {
+		description = *req.Description
+	}
+	if bpa.TicketScopeFingerprint(title, description) != state.ApprovedScopeFingerprint {
+		return fmt.Errorf("approved production scope cannot be changed after work has resumed; create a follow-up ticket")
+	}
+	return nil
 }
 
 // validateAssigneePair verifies the (assignee_type, assignee_id) pair refers
@@ -3148,14 +3291,15 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		params := db.UpdateIssueParams{
-			ID:            prevIssue.ID,
-			AssigneeType:  prevIssue.AssigneeType,
-			AssigneeID:    prevIssue.AssigneeID,
-			StartDate:     prevIssue.StartDate,
-			DueDate:       prevIssue.DueDate,
-			ParentIssueID: prevIssue.ParentIssueID,
-			ProjectID:     prevIssue.ProjectID,
-			Stage:         prevIssue.Stage,
+			ID:                prevIssue.ID,
+			AssigneeType:      prevIssue.AssigneeType,
+			AssigneeID:        prevIssue.AssigneeID,
+			StartDate:         prevIssue.StartDate,
+			DueDate:           prevIssue.DueDate,
+			ParentIssueID:     prevIssue.ParentIssueID,
+			ProjectID:         prevIssue.ProjectID,
+			Stage:             prevIssue.Stage,
+			ExpectedUpdatedAt: prevIssue.UpdatedAt,
 		}
 
 		if req.Updates.Title != nil {
@@ -3289,8 +3433,43 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
+		if req.Updates.Status != nil && isPendingBPAProductionReviewExit(prevIssue, *req.Updates.Status) {
+			continue
+		}
+		batchIssueUpdate := UpdateIssueRequest{
+			Title:       req.Updates.Title,
+			Description: req.Updates.Description,
+			Status:      req.Updates.Status,
+		}
+		if err := h.validateBPAApprovedScopeUpdate(prevIssue, batchIssueUpdate); err != nil {
+			continue
+		}
+		reviewValues, err := h.bpaReviewValuesForIssueUpdate(r.Context(), prevIssue, batchIssueUpdate, actorType)
+		if err != nil {
+			continue
+		}
 
-		issue, err := h.Queries.UpdateIssue(r.Context(), params)
+		var issue db.Issue
+		if len(reviewValues) > 0 {
+			tx, beginErr := h.TxStarter.Begin(r.Context())
+			if beginErr != nil {
+				continue
+			}
+			qtx := h.Queries.WithTx(tx)
+			issue, err = qtx.UpdateIssue(r.Context(), params)
+			if err == nil {
+				issue, err = qtx.SetIssueMetadataValues(r.Context(), db.SetIssueMetadataValuesParams{
+					ID: prevIssue.ID, WorkspaceID: prevIssue.WorkspaceID, Values: reviewValues,
+				})
+			}
+			if err == nil {
+				err = tx.Commit(r.Context())
+			} else {
+				_ = tx.Rollback(r.Context())
+			}
+		} else {
+			issue, err = h.Queries.UpdateIssue(r.Context(), params)
+		}
 		if err != nil {
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
 			continue

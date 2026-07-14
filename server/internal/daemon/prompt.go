@@ -157,18 +157,20 @@ func buildCommentPrompt(task Task, provider string) string {
 			}
 			authorLabel = fmt.Sprintf("Another agent (%s)", name)
 		}
-		fmt.Fprintf(&b, "[NEW COMMENT] %s just left a new comment. Focus on THIS comment — do not confuse it with previous ones:\n\n", authorLabel)
+		fmt.Fprintf(&b, "[TRIGGERING COMMENT] %s left the comment that initiated this run. Read it together with every additional comment below:\n\n", authorLabel)
 		fmt.Fprintf(&b, "> %s\n\n", task.TriggerCommentContent)
 		// MUL-4195: comments that arrived before this run started were folded
-		// into it rather than dropped. The trigger above is the newest; the
-		// agent must ALSO address these earlier ones so no deliberate user
-		// instruction is silently lost. Prefer the embedded detail so the agent
+		// into it rather than dropped. Additional comments can be earlier or
+		// later than the immutable trigger (production review keeps its original
+		// authorization trigger). The agent must address them chronologically;
+		// a later correction, cancellation, or condition overrides an earlier
+		// instruction. Prefer the embedded detail so the agent
 		// does not have to guess which thread each folded comment lives in
 		// (they may span multiple threads — review should-fix #3); fall back to
 		// a thread-agnostic issue-wide fetch hint for old servers that only send
 		// the ids.
 		if len(task.CoalescedComments) > 0 {
-			fmt.Fprintf(&b, "This run also covers %d earlier comment(s) posted before it started — you must read and address them too, not just the one above. They may be in different threads, so each is reproduced here with its own thread:\n\n", len(task.CoalescedComments))
+			fmt.Fprintf(&b, "This run also covers %d additional comment(s). Use their timestamps to reconstruct the order; later corrections, cancellations, and conditions take precedence. They may be in different threads, so each is reproduced here with its own thread:\n\n", len(task.CoalescedComments))
 			for _, cc := range task.CoalescedComments {
 				authorLabel := "A user"
 				if cc.AuthorType == "agent" {
@@ -194,7 +196,7 @@ func buildCommentPrompt(task Task, provider string) string {
 			}
 			fmt.Fprintf(&b, "\nIf you need the surrounding discussion for any of them, fetch its thread with `multica issue comment list %s --thread <thread-id> --tail 30 --output json` using the thread id shown above.\n\n", task.IssueID)
 		} else if len(task.CoalescedCommentIDs) > 0 {
-			fmt.Fprintf(&b, "This run also covers %d earlier comment(s) posted before it started — you must read and address them too, not just the one above: %s. These may be in DIFFERENT threads, so do not assume they share the triggering thread; fetch each by pulling the issue-wide discussion with `multica issue comment list %s --recent 30 --output json` (expand with `--full` if a thread is folded) and locate the ids above.\n\n",
+			fmt.Fprintf(&b, "This run also covers %d additional comment(s): %s. They may be earlier or later than the trigger, so fetch them, use their timestamps, and let later corrections, cancellations, and conditions take precedence. These may be in DIFFERENT threads; pull the issue-wide discussion with `multica issue comment list %s --recent 30 --output json` (expand with `--full` if a thread is folded) and locate the ids above.\n\n",
 				len(task.CoalescedCommentIDs), strings.Join(task.CoalescedCommentIDs, ", "), task.IssueID)
 		}
 		if task.TriggerAuthorType == "agent" {
