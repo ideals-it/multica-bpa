@@ -458,7 +458,9 @@ func triggerLocalDayWindow(at time.Time, timezone string) (time.Time, time.Time)
 	return start.UTC(), start.AddDate(0, 0, 1).UTC()
 }
 
-// dispatchCreateIssue creates an issue and enqueues a task for the agent.
+// dispatchCreateIssue creates an assigned issue in Backlog. Autopilot-created
+// work is intentionally parked until a human promotes it or explicitly starts
+// it; assignment alone must not enqueue an agent task.
 //
 // When the autopilot is assigned to a squad (Path A from MUL-2429), the
 // created issue inherits assignee_type='squad' + assignee_id=squad. The
@@ -473,6 +475,12 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	leader, _, err := s.resolveAutopilotLeader(ctx, ap)
 	if err != nil {
 		return fmt.Errorf("resolve leader: %w", err)
+	}
+	// Keep the invocation permission gate even though dispatch is deferred.
+	// This catches old configurations whose creator can no longer invoke a
+	// private squad leader before they create work for that agent.
+	if ap.AssigneeType == "squad" && !s.canCreatorInvokeAgent(ctx, ap, leader) {
+		return fmt.Errorf("autopilot creator cannot access private squad leader")
 	}
 
 	tx, err := s.TxStarter.Begin(ctx)
@@ -499,7 +507,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return fmt.Errorf("increment issue counter: %w", err)
 	}
 
-	newPosition, err := issueposition.NextTopPosition(ctx, tx, ap.WorkspaceID, "todo")
+	newPosition, err := issueposition.NextTopPosition(ctx, tx, ap.WorkspaceID, "backlog")
 	if err != nil {
 		return fmt.Errorf("get next issue position: %w", err)
 	}
@@ -508,7 +516,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		WorkspaceID:  ap.WorkspaceID,
 		Title:        title,
 		Description:  description,
-		Status:       "todo",
+		Status:       "backlog",
 		Priority:     "none",
 		AssigneeType: pgtype.Text{String: ap.AssigneeType, Valid: true},
 		AssigneeID:   ap.AssigneeID,
@@ -568,10 +576,9 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return fmt.Errorf("commit tx: %w", err)
 	}
 
-	// Publish issue:created so the existing event chain fires
-	// (subscriber listeners, activity listeners, notification listeners). For
-	// squad autopilots, this is what triggers shouldEnqueueSquadLeaderOnAssign
-	// → enqueueSquadLeaderTask — no separate squad-routing code needed here.
+	// Publish issue:created so the existing subscriber, activity, and
+	// notification listeners fire. The Backlog status keeps task routing parked
+	// until a human promotes or explicitly starts the issue.
 	prefix := s.getIssuePrefix(ap.WorkspaceID)
 	s.Bus.Publish(events.Event{
 		Type:        protocol.EventIssueCreated,
@@ -595,28 +602,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	// roll back the issue itself.
 	s.notifyAutopilotSubscribersOnCreate(ctx, ap, issue, leader.ID, templateSubs)
 
-	// Enqueue agent task via the existing flow. Squad-assigned autopilots
-	// route to the resolved leader as the executing agent (Path A from
-	// MUL-2429); agent-assigned autopilots go through the standard issue
-	// path. Both code paths land in agent_task_queue with agent_id = leader.
-	if ap.AssigneeType == "squad" {
-		// Fail-closed invocation gate: verify the autopilot creator may still
-		// invoke the leader under the permission model. Catches configs that
-		// predate the save-time gate, and admin-created configs that no longer
-		// pass (MUL-3963).
-		if !s.canCreatorInvokeAgent(ctx, ap, leader) {
-			return fmt.Errorf("autopilot creator cannot access private squad leader")
-		}
-		if _, err := s.TaskSvc.EnqueueTaskForSquadLeader(ctx, issue, leader.ID, ap.AssigneeID, pgtype.UUID{}); err != nil {
-			return fmt.Errorf("enqueue squad leader task: %w", err)
-		}
-	} else {
-		if _, err := s.TaskSvc.EnqueueTaskForIssue(ctx, issue); err != nil {
-			return fmt.Errorf("enqueue task for issue: %w", err)
-		}
-	}
-
-	slog.Info("autopilot dispatched (create_issue)",
+	slog.Info("autopilot created backlog issue",
 		"autopilot_id", util.UUIDToString(ap.ID),
 		"assignee_type", ap.AssigneeType,
 		"issue_id", util.UUIDToString(issue.ID),
@@ -814,7 +800,7 @@ func (s *AutopilotService) SyncRunFromIssue(ctx context.Context, issue db.Issue)
 	wsID := util.UUIDToString(issue.WorkspaceID)
 
 	switch issue.Status {
-	case "done", "in_review":
+	case "done":
 		updatedRun, err := s.Queries.UpdateAutopilotRunCompleted(ctx, db.UpdateAutopilotRunCompletedParams{
 			ID: run.ID,
 		})

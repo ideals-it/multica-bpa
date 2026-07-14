@@ -1157,6 +1157,72 @@ func (q *Queries) MarkIssueFirstExecuted(ctx context.Context, id pgtype.UUID) (M
 	return i, err
 }
 
+const setBPAReviewCommentIfCurrent = `-- name: SetBPAReviewCommentIfCurrent :one
+UPDATE issue SET
+    metadata = jsonb_set(metadata, ARRAY['bpa.review_comment_id'], to_jsonb($1::text)),
+    updated_at = now()
+WHERE id = $2
+  AND workspace_id = $3
+  AND status = 'in_review'
+  AND metadata ->> 'bpa.template' = 'production'
+  AND metadata ->> 'bpa.approval_status' = 'pending'
+  AND metadata ->> 'bpa.review_requested_at' = $4::text
+  AND metadata ->> 'bpa.scope_fingerprint' = $5::text
+  AND COALESCE(metadata ->> 'bpa.review_comment_id', '') = ''
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage
+`
+
+type SetBPAReviewCommentIfCurrentParams struct {
+	ReviewCommentID           string      `json:"review_comment_id"`
+	ID                        pgtype.UUID `json:"id"`
+	WorkspaceID               pgtype.UUID `json:"workspace_id"`
+	ExpectedReviewRequestedAt string      `json:"expected_review_requested_at"`
+	ExpectedScopeFingerprint  string      `json:"expected_scope_fingerprint"`
+}
+
+// Binds a human review comment only to the exact production review snapshot
+// that was visible when routing started. Unrelated Archivist metadata may
+// change concurrently without invalidating the review, while a replacement
+// scope/review cannot inherit an older comment.
+func (q *Queries) SetBPAReviewCommentIfCurrent(ctx context.Context, arg SetBPAReviewCommentIfCurrentParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, setBPAReviewCommentIfCurrent,
+		arg.ReviewCommentID,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.ExpectedReviewRequestedAt,
+		arg.ExpectedScopeFingerprint,
+	)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+	)
+	return i, err
+}
+
 const setIssueMetadataKey = `-- name: SetIssueMetadataKey :one
 
 UPDATE issue SET
@@ -1280,23 +1346,25 @@ UPDATE issue SET
     stage = $13,
     updated_at = now()
 WHERE id = $1
+  AND ($14::timestamptz IS NULL OR updated_at = $14::timestamptz)
 RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage
 `
 
 type UpdateIssueParams struct {
-	ID            pgtype.UUID   `json:"id"`
-	Title         pgtype.Text   `json:"title"`
-	Description   pgtype.Text   `json:"description"`
-	Status        pgtype.Text   `json:"status"`
-	Priority      pgtype.Text   `json:"priority"`
-	AssigneeType  pgtype.Text   `json:"assignee_type"`
-	AssigneeID    pgtype.UUID   `json:"assignee_id"`
-	Position      pgtype.Float8 `json:"position"`
-	StartDate     pgtype.Date   `json:"start_date"`
-	DueDate       pgtype.Date   `json:"due_date"`
-	ParentIssueID pgtype.UUID   `json:"parent_issue_id"`
-	ProjectID     pgtype.UUID   `json:"project_id"`
-	Stage         pgtype.Int4   `json:"stage"`
+	ID                pgtype.UUID        `json:"id"`
+	Title             pgtype.Text        `json:"title"`
+	Description       pgtype.Text        `json:"description"`
+	Status            pgtype.Text        `json:"status"`
+	Priority          pgtype.Text        `json:"priority"`
+	AssigneeType      pgtype.Text        `json:"assignee_type"`
+	AssigneeID        pgtype.UUID        `json:"assignee_id"`
+	Position          pgtype.Float8      `json:"position"`
+	StartDate         pgtype.Date        `json:"start_date"`
+	DueDate           pgtype.Date        `json:"due_date"`
+	ParentIssueID     pgtype.UUID        `json:"parent_issue_id"`
+	ProjectID         pgtype.UUID        `json:"project_id"`
+	Stage             pgtype.Int4        `json:"stage"`
+	ExpectedUpdatedAt pgtype.Timestamptz `json:"expected_updated_at"`
 }
 
 func (q *Queries) UpdateIssue(ctx context.Context, arg UpdateIssueParams) (Issue, error) {
@@ -1314,6 +1382,7 @@ func (q *Queries) UpdateIssue(ctx context.Context, arg UpdateIssueParams) (Issue
 		arg.ParentIssueID,
 		arg.ProjectID,
 		arg.Stage,
+		arg.ExpectedUpdatedAt,
 	)
 	var i Issue
 	err := row.Scan(

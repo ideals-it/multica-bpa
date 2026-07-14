@@ -58,6 +58,8 @@ type State struct {
 	BlockerAction            string
 	ScopeFingerprint         string
 	ApprovedScopeFingerprint string
+	ReviewRequestedAt        string
+	ReviewCommentID          string
 }
 
 func (s State) Enabled() bool {
@@ -136,6 +138,12 @@ func ParseState(metadata map[string]any) (State, error) {
 		return State{}, err
 	}
 	if state.ApprovedScopeFingerprint, err = stringValue(metadata, "bpa.approved_scope_fingerprint"); err != nil {
+		return State{}, err
+	}
+	if state.ReviewRequestedAt, err = stringValue(metadata, "bpa.review_requested_at"); err != nil {
+		return State{}, err
+	}
+	if state.ReviewCommentID, err = stringValue(metadata, "bpa.review_comment_id"); err != nil {
 		return State{}, err
 	}
 	return state, nil

@@ -832,6 +832,23 @@ func TestBuildCommentPromptCrossThreadFansOutReplies(t *testing.T) {
 	}
 }
 
+func TestBuildCommentPromptLetsLaterCancellationOverrideApprovalTrigger(t *testing.T) {
+	out := BuildPrompt(Task{
+		IssueID:               "issue-production-review",
+		TriggerCommentID:      "approval-comment",
+		TriggerCommentContent: "Можна деплоїти.",
+		TriggerAuthorType:     "member",
+		CoalescedComments: []CoalescedCommentData{{
+			ID: "later-stop", AuthorType: "member", Content: "Стоп, не деплой.", CreatedAt: "2026-07-14T14:30:00Z",
+		}},
+	}, "codex")
+	for _, want := range []string{"Стоп, не деплой.", "later corrections, cancellations, and conditions take precedence"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // TestBuildCommentPromptSameThreadKeepsSingleReply pins the hard requirement:
 // multiple @mentions coalesced from the SAME thread must keep the ordinary
 // single-parent reply path (one reply, under the trigger comment) and must NOT

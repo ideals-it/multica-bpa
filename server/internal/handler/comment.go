@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/bpa"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -1304,9 +1304,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// entity-encode Markdown syntax characters (>, ", &, <) and corrupt the
 	// source. See issue #1303 / discussion in MUL-1119, MUL-1125.
 	content := req.Content
-	if authorType == "agent" {
-		content = h.ensureBPAWorkerHandoffMention(r.Context(), issue, parseUUID(authorID), sourceTaskID, content)
-	}
 
 	// parent_id stores the exact comment being replied to. Thread-level behavior
 	// (for example auto-unresolving a resolved thread) resolves the root
@@ -1369,40 +1366,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-// ensureBPAWorkerHandoffMention keeps an agent-owned root ticket readable when
-// a specialist completes a task without naming the next owner. It covers every
-// task-scoped agent comment on such a root, including roots that have not yet
-// started a BPA template; explicit agent, squad, or member routing remains the
-// agent's own decision.
-func (h *Handler) ensureBPAWorkerHandoffMention(ctx context.Context, issue db.Issue, agentID, sourceTaskID pgtype.UUID, content string) string {
-	if !sourceTaskID.Valid || strings.TrimSpace(content) == "" {
-		return content
-	}
-	root := issue
-	if issue.ParentIssueID.Valid {
-		var enabled bool
-		var err error
-		root, enabled, err = h.bpaRoot(ctx, issue)
-		if err != nil || !enabled {
-			return content
-		}
-	}
-	if root.AssigneeType.String != "agent" ||
-		!root.AssigneeID.Valid || root.AssigneeID == agentID {
-		return content
-	}
-	for _, mention := range util.ParseMentions(content) {
-		if mention.Type == "agent" || mention.Type == "squad" || mention.Type == "member" {
-			return content
-		}
-	}
-	leadName := "AT Team Lead"
-	if lead, err := h.Queries.GetAgent(ctx, root.AssigneeID); err == nil && strings.TrimSpace(lead.Name) != "" {
-		leadName = lead.Name
-	}
-	return content + fmt.Sprintf("\n\n**Наступне:** [@%s](mention://agent/%s) прийняти результат і визначити наступну дію.", leadName, uuidToString(root.AssigneeID))
-}
-
 // noteCommentPrefix marks a comment as a human-only note. A comment whose first
 // whitespace-delimited token is this prefix (case-insensitive) is stored like
 // any other comment but never triggers an agent.
@@ -1422,7 +1385,11 @@ func isNoteComment(content string) bool {
 }
 
 func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs []pgtype.UUID) {
-	if isNoteComment(comment.Content) {
+	// Backlog is deliberately parked work. In particular, autopilots create
+	// assigned tickets there for a human to review first; a later discussion
+	// comment must not silently turn that ticket into an active agent run.
+	// Explicit manual run and a status promotion remain separate entry points.
+	if (issue.Status == "backlog" && issue.OriginType.Valid && issue.OriginType.String == "autopilot") || isNoteComment(comment.Content) {
 		return
 	}
 	triggers := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
@@ -1468,6 +1435,17 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 	}
 	for _, trigger := range triggers {
 		if trigger.AlreadyPending {
+			// A queued production-review continuation is bound to the owner/admin
+			// comment that opened it. Keep that immutable trigger, but append later
+			// conversation to the queued run so user corrections are not dropped.
+			if isPendingBPAProductionReview(issue) {
+				if h.appendCommentToPendingTask(ctx, issue, trigger, triggerCommentID) {
+					continue
+				}
+				if h.hasActiveTaskForIssueAndAgent(ctx, issue.ID, trigger.Agent.ID) {
+					continue
+				}
+			}
 			// MUL-4195: a queued/dispatched task for this (issue, agent)
 			// already exists. Historically we DROPPED the comment here, losing
 			// the user's follow-up instruction. Instead try to fold it into the
@@ -1493,6 +1471,43 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 		}
 		h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger, getEscalationDelay)
 	}
+}
+
+// appendCommentToPendingTask adds conversation to the active production-review
+// continuation without replacing its authorization-bearing trigger comment.
+// Claimed runs pick the added planned ID up through completion reconciliation.
+// It returns false only when no active row remains.
+func (h *Handler) appendCommentToPendingTask(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, newCommentID pgtype.UUID) bool {
+	row, err := h.Queries.AppendCommentToPendingTask(ctx, db.AppendCommentToPendingTaskParams{
+		NewCommentID: newCommentID,
+		IssueID:      issue.ID,
+		AgentID:      trigger.Agent.ID,
+	})
+	if err != nil {
+		if isNotFound(err) {
+			return false
+		}
+		slog.Warn("append comment to pending production review failed",
+			"issue_id", uuidToString(issue.ID),
+			"agent_id", uuidToString(trigger.Agent.ID),
+			"error", err)
+		return true
+	}
+	slog.Info("appended comment to pending production review",
+		"task_id", uuidToString(row.ID),
+		"issue_id", uuidToString(issue.ID),
+		"agent_id", uuidToString(trigger.Agent.ID),
+		"coalesced_count", len(row.CoalescedCommentIds))
+	return true
+}
+
+func isPendingBPAProductionReview(issue db.Issue) bool {
+	if issue.ParentIssueID.Valid || issue.Status != "in_review" {
+		return false
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	return err == nil && state.Template == bpa.TemplateProduction && state.ApprovalStatus == bpa.ApprovalPending &&
+		state.WaitingFor == bpa.WaitingForHumanApproval
 }
 
 // hasActiveTaskForIssueAndAgent reports whether the (issue, agent) pair has any
@@ -1587,31 +1602,47 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 	switch trigger.Source {
 	case commentTriggerSourceIssueAssignee:
 		if trigger.Squad != nil {
-			if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID); err != nil {
+			task, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID)
+			if err != nil {
+				h.recoverPendingBPAReviewComment(ctx, issue, trigger, triggerCommentID)
 				slog.Warn("enqueue squad leader task failed",
 					"issue_id", uuidToString(issue.ID),
 					"squad_id", uuidToString(trigger.Squad.ID),
 					"leader_id", uuidToString(trigger.Agent.ID),
 					"error", err)
+			} else {
+				h.markBPAReviewTrigger(ctx, issue, task, triggerCommentID)
 			}
 			return
 		}
-		if _, err := h.TaskService.EnqueueTaskForIssue(ctx, issue, triggerCommentID); err != nil {
+		task, err := h.TaskService.EnqueueTaskForIssue(ctx, issue, triggerCommentID)
+		if err != nil {
+			h.recoverPendingBPAReviewComment(ctx, issue, trigger, triggerCommentID)
 			slog.Warn("enqueue agent task on comment failed", "issue_id", uuidToString(issue.ID), "error", err)
+		} else {
+			h.markBPAReviewTrigger(ctx, issue, task, triggerCommentID)
 		}
 	case commentTriggerSourceMentionSquadLeader:
-		if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID); err != nil {
+		task, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID)
+		if err != nil {
+			h.recoverPendingBPAReviewComment(ctx, issue, trigger, triggerCommentID)
 			slog.Warn("enqueue squad leader mention task failed",
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID),
 				"error", err)
+		} else {
+			h.markBPAReviewTrigger(ctx, issue, task, triggerCommentID)
 		}
 	case commentTriggerSourceMentionAgent:
-		if _, err := h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID); err != nil {
+		task, err := h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID)
+		if err != nil {
+			h.recoverPendingBPAReviewComment(ctx, issue, trigger, triggerCommentID)
 			slog.Warn("enqueue mention agent task failed",
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID),
 				"error", err)
+		} else {
+			h.markBPAReviewTrigger(ctx, issue, task, triggerCommentID)
 		}
 	case commentTriggerSourceThreadParent, commentTriggerSourceConversation:
 		var task db.AgentTaskQueue
@@ -1622,6 +1653,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			task, err = h.TaskService.EnqueueTaskForThreadParent(ctx, issue, trigger.Agent.ID, triggerCommentID)
 		}
 		if err != nil {
+			h.recoverPendingBPAReviewComment(ctx, issue, trigger, triggerCommentID)
 			slog.Warn("enqueue routed comment agent task failed",
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID),
@@ -1629,6 +1661,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 				"error", err)
 			return
 		}
+		h.markBPAReviewTrigger(ctx, issue, task, triggerCommentID)
 		if trigger.EscalationFallback == nil || getEscalationDelay() <= 0 {
 			return
 		}
@@ -1643,6 +1676,40 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 				"fallback_agent_id", uuidToString(trigger.EscalationFallback.Agent.ID),
 				"error", err)
 		}
+	}
+}
+
+// markBPAReviewTrigger binds a production continuation to the task that was
+// actually queued while the issue was visibly pending review. A task created
+// from an older/pre-review comment never receives this marker and therefore
+// cannot authorize production execution.
+func (h *Handler) markBPAReviewTrigger(ctx context.Context, issue db.Issue, task db.AgentTaskQueue, commentID pgtype.UUID) {
+	if !isPendingBPAProductionReview(issue) || !task.TriggerCommentID.Valid || task.TriggerCommentID != commentID {
+		return
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil || state.ReviewRequestedAt == "" || state.ScopeFingerprint == "" {
+		return
+	}
+	if _, err := h.Queries.SetBPAReviewCommentIfCurrent(ctx, db.SetBPAReviewCommentIfCurrentParams{
+		ID:                        issue.ID,
+		WorkspaceID:               issue.WorkspaceID,
+		ReviewCommentID:           uuidToString(commentID),
+		ExpectedReviewRequestedAt: state.ReviewRequestedAt,
+		ExpectedScopeFingerprint:  state.ScopeFingerprint,
+	}); err != nil {
+		if !isNotFound(err) {
+			slog.Warn("mark production review trigger failed", "issue_id", uuidToString(issue.ID), "task_id", uuidToString(task.ID), "error", err)
+		}
+	}
+}
+
+// recoverPendingBPAReviewComment closes the SELECT-then-INSERT race: when a
+// concurrent review comment won the unique queued-task insert, fold this one
+// into that winner instead of dropping it.
+func (h *Handler) recoverPendingBPAReviewComment(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, commentID pgtype.UUID) {
+	if isPendingBPAProductionReview(issue) {
+		h.appendCommentToPendingTask(ctx, issue, trigger, commentID)
 	}
 }
 

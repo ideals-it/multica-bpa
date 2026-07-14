@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -61,20 +60,31 @@ func (h *Handler) StartBPAWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	updated, err := h.setBPAWorkflowValues(r, issue, map[string]any{
+	values := map[string]any{
 		"bpa.template":    string(req.Template),
 		"bpa.waiting_for": string(bpa.WaitingForLead),
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start BPA workflow")
-		return
 	}
-	if req.Template == bpa.TemplateProduction && updated.Status == "in_review" {
-		updated, err = h.beginBPAHumanReview(r, updated)
-		if err != nil {
+	if req.Template == bpa.TemplateProduction && issue.Status == "in_review" {
+		reviewRequestedAt, timestampErr := h.bpaReviewTimestamp(r.Context())
+		if timestampErr != nil {
 			writeError(w, http.StatusInternalServerError, "failed to prepare BPA review")
 			return
 		}
+		description := ""
+		if issue.Description.Valid {
+			description = issue.Description.String
+		}
+		values["bpa.scope_fingerprint"] = bpa.TicketScopeFingerprint(issue.Title, description)
+		values["bpa.approved_scope_fingerprint"] = ""
+		values["bpa.approval_status"] = string(bpa.ApprovalPending)
+		values["bpa.review_requested_at"] = reviewRequestedAt.Format(time.RFC3339Nano)
+		values["bpa.review_comment_id"] = ""
+		values["bpa.waiting_for"] = string(bpa.WaitingForHumanApproval)
+	}
+	updated, err := h.setBPAWorkflowValues(r, issue, values)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start BPA workflow")
+		return
 	}
 	h.writeBPAWorkflow(w, updated)
 }
@@ -119,30 +129,79 @@ func (h *Handler) beginBPAHumanReview(r *http.Request, issue db.Issue) (db.Issue
 	if issue.Description.Valid {
 		description = issue.Description.String
 	}
+	reviewRequestedAt, err := h.bpaReviewTimestamp(r.Context())
+	if err != nil {
+		return db.Issue{}, err
+	}
 	return h.setBPAWorkflowValues(r, issue, map[string]any{
 		"bpa.scope_fingerprint":          bpa.TicketScopeFingerprint(issue.Title, description),
 		"bpa.approved_scope_fingerprint": "",
 		"bpa.approval_status":            string(bpa.ApprovalPending),
+		"bpa.review_requested_at":        reviewRequestedAt.Format(time.RFC3339Nano),
+		"bpa.review_comment_id":          "",
 		"bpa.waiting_for":                string(bpa.WaitingForHumanApproval),
 	})
 }
 
-func (h *Handler) shouldBeginBPAHumanReview(issue db.Issue) (bool, error) {
-	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
-	if err != nil || state.Template != bpa.TemplateProduction || issue.ParentIssueID.Valid {
-		return false, err
+func (h *Handler) bpaReviewTimestamp(ctx context.Context) (time.Time, error) {
+	var timestamp time.Time
+	if err := h.DB.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&timestamp); err != nil {
+		return time.Time{}, err
 	}
-	description := ""
-	if issue.Description.Valid {
-		description = issue.Description.String
-	}
-	scope := bpa.TicketScopeFingerprint(issue.Title, description)
-	return state.ApprovalStatus != bpa.ApprovalApproved || state.ApprovedScopeFingerprint != scope, nil
+	return timestamp.UTC(), nil
 }
 
-// bpaRootHasOpenChildren enforces Lead fan-in on a BPA root. The generic
-// Multica board remains unchanged; only an enabled BPA template gets this
-// workflow guard before the root can be closed.
+// isBPAProductionReviewContinuation allows the assigned root agent to resume
+// a pending review only from a live task triggered by an owner/admin comment.
+// The server deliberately does not interpret the comment text: the agent reads
+// the full conversation and decides whether the human response is a clear
+// approval. Requiring the task/comment chain prevents a manual card move or an
+// unrelated agent task from bypassing the production gate.
+func (h *Handler) isBPAProductionReviewContinuation(r *http.Request, issue db.Issue, actorType, actorID string) bool {
+	if r.Header.Get("X-Actor-Source") != "task_token" || actorType != "agent" || !h.bpaActorIsCoordinator(r.Context(), issue, actorID) {
+		return false
+	}
+	agentID, err := util.ParseUUID(actorID)
+	if err != nil {
+		return false
+	}
+	taskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
+	if err != nil {
+		return false
+	}
+	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
+	if err != nil || task.Status != "running" || task.AgentID != agentID || !task.IssueID.Valid || task.IssueID != issue.ID || !task.TriggerCommentID.Valid {
+		return false
+	}
+	comment, err := h.Queries.GetCommentInWorkspace(r.Context(), db.GetCommentInWorkspaceParams{
+		ID: task.TriggerCommentID, WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil || comment.AuthorType != "member" || !comment.AuthorID.Valid {
+		return false
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil || state.ReviewRequestedAt == "" {
+		return false
+	}
+	reviewRequestedAt, err := time.Parse(time.RFC3339Nano, state.ReviewRequestedAt)
+	if err != nil {
+		return false
+	}
+	if comment.CreatedAt.Time.Before(reviewRequestedAt) {
+		return false
+	}
+	if state.ReviewCommentID == "" || state.ReviewCommentID != uuidToString(comment.ID) {
+		return false
+	}
+	member, err := h.Queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
+		UserID: comment.AuthorID, WorkspaceID: issue.WorkspaceID,
+	})
+	return err == nil && roleAllowed(member.Role, "owner", "admin")
+}
+
+// bpaRootHasOpenChildren prevents closing a BPA root before its explicit child
+// tasks are complete. The generic Multica board remains unchanged; this guard
+// only applies when a workflow template is enabled.
 func (h *Handler) bpaRootHasOpenChildren(ctx context.Context, issue db.Issue) (bool, error) {
 	if issue.ParentIssueID.Valid {
 		return false, nil
@@ -162,28 +221,17 @@ func (h *Handler) bpaRootHasOpenChildren(ctx context.Context, issue db.Issue) (b
 	return bpa.HasOpenChildren(statuses), nil
 }
 
-// bpaChildHasCommitEvidence applies the repository checkpoint rule only to a
-// child whose root explicitly uses a BPA workflow template.
-func (h *Handler) bpaChildHasCommitEvidence(ctx context.Context, issue db.Issue) (bool, error) {
-	if !issue.ParentIssueID.Valid {
-		return true, nil
-	}
-	_, enabled, err := h.bpaRoot(ctx, issue)
-	if err != nil || !enabled {
-		return true, err
-	}
-	return bpa.HasCommitEvidence(parseIssueMetadata(issue.Metadata)), nil
-}
-
 // validateBPACompletion is the one completion gate shared by direct edits,
-// batch updates, and GitHub merge completion.
+// batch updates, and GitHub merge completion. A root agent owns its final
+// result comment, so completion never depends on a rigid Lead-only template.
 func (h *Handler) validateBPACompletion(ctx context.Context, issue db.Issue) error {
-	hasCommitEvidence, err := h.bpaChildHasCommitEvidence(ctx, issue)
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
 	if err != nil {
 		return err
 	}
-	if !hasCommitEvidence {
-		return fmt.Errorf("BPA child needs a commit SHA or explicit no repo changes reason before completion")
+	if !issue.ParentIssueID.Valid && issue.Status == "in_review" && state.Template == bpa.TemplateProduction &&
+		state.ApprovalStatus == bpa.ApprovalPending {
+		return fmt.Errorf("pending production review cannot be completed before the assigned agent interprets an owner or admin comment")
 	}
 	hasOpenChildren, err := h.bpaRootHasOpenChildren(ctx, issue)
 	if err != nil {
@@ -192,29 +240,15 @@ func (h *Handler) validateBPACompletion(ctx context.Context, issue db.Issue) err
 	if hasOpenChildren {
 		return fmt.Errorf("BPA main task cannot be closed while child tasks are still open")
 	}
-	return h.validateBPAFinalRootSummary(ctx, issue)
+	return nil
 }
 
-func (h *Handler) validateBPAFinalRootSummary(ctx context.Context, issue db.Issue) error {
-	if issue.ParentIssueID.Valid {
-		return nil
+func isPendingBPAProductionReviewExit(issue db.Issue, targetStatus string) bool {
+	if issue.ParentIssueID.Valid || issue.Status != "in_review" || targetStatus == "in_review" {
+		return false
 	}
 	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
-	if err != nil || !state.Enabled() {
-		return err
-	}
-	comments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
-		IssueID:     issue.ID,
-		WorkspaceID: issue.WorkspaceID,
-		Limit:       2000,
-	})
-	if err != nil {
-		return fmt.Errorf("load BPA root comments: %w", err)
-	}
-	if !hasBPAFinalRootSummary(issue, comments) {
-		return fmt.Errorf("BPA main task needs a final root summary from Team Lead before completion")
-	}
-	return nil
+	return err == nil && state.Template == bpa.TemplateProduction && state.ApprovalStatus == bpa.ApprovalPending
 }
 
 // queueBPAArchivist records server-owned knowledge markers for a BPA root.
@@ -303,72 +337,4 @@ func (h *Handler) queueBPAArchivistAfterTaskCompletion(ctx context.Context, task
 		return
 	}
 	h.queueBPAArchivist(ctx, issue, "task_completed")
-}
-
-// queueRootAssigneeAfterSpecialistCompletion closes the single-ticket handoff
-// gap: when a specialist completes work on an agent-owned root issue, the
-// owner receives one normal follow-up run. This is intentionally independent
-// of BPA metadata and comment mention syntax, because a Lead can delegate on a
-// normal issue as well as on a BPA template.
-//
-// When a specialist completes while the Lead is already running, no concurrent
-// Lead task is created. Instead, the Lead's own completion checks whether a
-// specialist produced newer evidence during that run and schedules one
-// follow-up after the active-task barrier is clear.
-func (h *Handler) queueRootAssigneeAfterSpecialistCompletion(ctx context.Context, task db.AgentTaskQueue) {
-	if !task.IssueID.Valid {
-		return
-	}
-	issue, err := h.Queries.GetIssue(ctx, task.IssueID)
-	if err != nil || issue.ParentIssueID.Valid || issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
-		return
-	}
-	if issue.Status == "done" || issue.Status == "cancelled" {
-		return
-	}
-	// Archivist is a read-only sidecar, not a delivery specialist. Its
-	// completion must never wake the Lead, otherwise archive and Lead runs
-	// alternate forever and contend for the same local directory.
-	if isConfiguredBPAArchivist(issue, uuidToString(task.AgentID)) {
-		return
-	}
-
-	active, err := h.Queries.ListActiveTasksByIssue(ctx, issue.ID)
-	if err != nil {
-		slog.Warn("root handoff: list active tasks failed", "issue_id", uuidToString(issue.ID), "error", err)
-		return
-	}
-	if len(active) > 0 {
-		// A still-active specialist means the Lead must wait for all evidence.
-		// An active Lead already owns the next step, so a duplicate queue would
-		// be both noisy and potentially concurrent.
-		return
-	}
-
-	if task.AgentID == issue.AssigneeID {
-		if !task.StartedAt.Valid {
-			return
-		}
-		hasNewSpecialistResult, err := h.Queries.HasCompletedSpecialistSinceTaskStart(ctx, db.HasCompletedSpecialistSinceTaskStartParams{
-			IssueID:     issue.ID,
-			AgentID:     issue.AssigneeID,
-			CompletedAt: task.StartedAt,
-		})
-		if err != nil {
-			slog.Warn("root handoff: check specialist completion after Lead start failed",
-				"issue_id", uuidToString(issue.ID), "task_id", uuidToString(task.ID), "error", err)
-			return
-		}
-		if !hasNewSpecialistResult {
-			return
-		}
-	}
-
-	if _, err := h.TaskService.EnqueueTaskForIssue(ctx, issue); err != nil {
-		slog.Warn("root handoff: enqueue assignee failed",
-			"issue_id", uuidToString(issue.ID),
-			"agent_id", uuidToString(issue.AssigneeID),
-			"completed_task_id", uuidToString(task.ID),
-			"error", err)
-	}
 }

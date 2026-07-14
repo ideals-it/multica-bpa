@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestCompleteTaskQueuesRootAssigneeAfterFinalSpecialist(t *testing.T) {
+func TestCompleteTaskDoesNotQueueRootAssigneeAfterSpecialist(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -21,8 +21,8 @@ func TestCompleteTaskQueuesRootAssigneeAfterFinalSpecialist(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if got := pendingTaskCountForAgentIssue(t, issueID, leadID); got != 1 {
-		t.Fatalf("queued Lead tasks = %d, want 1", got)
+	if got := pendingTaskCountForAgentIssue(t, issueID, leadID); got != 0 {
+		t.Fatalf("queued root-assignee tasks = %d, want 0", got)
 	}
 
 	var systemComments int
@@ -36,7 +36,7 @@ func TestCompleteTaskQueuesRootAssigneeAfterFinalSpecialist(t *testing.T) {
 	}
 }
 
-func TestCompleteTaskWaitsForOtherActiveSpecialistBeforeQueueingRootAssignee(t *testing.T) {
+func TestCompleteTaskDoesNotQueueRootAssigneeWhileOtherSpecialistIsActive(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -57,7 +57,7 @@ func TestCompleteTaskWaitsForOtherActiveSpecialistBeforeQueueingRootAssignee(t *
 	}
 }
 
-func TestCompleteTaskQueuesRootAssigneeAfterLeadFinishesPendingSpecialistHandoff(t *testing.T) {
+func TestCompleteTaskDoesNotQueueRootAssigneeAfterAnotherAgentFinishes(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -68,18 +68,18 @@ func TestCompleteTaskQueuesRootAssigneeAfterLeadFinishesPendingSpecialistHandoff
 	leadTaskID := insertRunningIssueTask(t, leadID, issueID)
 	builderTaskID := insertRunningIssueTask(t, builderID, issueID)
 
-	if w := completeTaskViaHandler(t, builderTaskID, "specialist evidence arrived while Lead was running"); w.Code != http.StatusOK {
+	if w := completeTaskViaHandler(t, builderTaskID, "specialist evidence arrived while root agent was running"); w.Code != http.StatusOK {
 		t.Fatalf("complete Builder task: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	if got := pendingTaskCountForAgentIssue(t, issueID, leadID); got != 0 {
-		t.Fatalf("queued Lead tasks while original Lead is active = %d, want 0", got)
+		t.Fatalf("queued root-assignee tasks while original task is active = %d, want 0", got)
 	}
 
-	if w := completeTaskViaHandler(t, leadTaskID, "Lead finished its earlier step"); w.Code != http.StatusOK {
-		t.Fatalf("complete original Lead task: expected 200, got %d: %s", w.Code, w.Body.String())
+	if w := completeTaskViaHandler(t, leadTaskID, "root agent finished its earlier step"); w.Code != http.StatusOK {
+		t.Fatalf("complete original root task: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if got := pendingTaskCountForAgentIssue(t, issueID, leadID); got != 1 {
-		t.Fatalf("queued Lead follow-up after delayed specialist handoff = %d, want 1", got)
+	if got := pendingTaskCountForAgentIssue(t, issueID, leadID); got != 0 {
+		t.Fatalf("queued root-assignee follow-up after another agent completion = %d, want 0", got)
 	}
 }
 

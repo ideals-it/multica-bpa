@@ -270,17 +270,12 @@ func TestBPAStandardWorkflowSkillTeachesSingleTicketHandoffs(t *testing.T) {
 	}
 
 	mustContain := []string{
-		"Lead → specialist → Quality → Lead",
-		"one root issue",
-		"Before Lead routes work: `Todo`",
-		"After Lead accepts the Quality result: `Done`",
-		"Child issues are optional",
-		"Team Lead owns the root issue",
-		"mention://agent/",
-		"Результат:",
-		"Перевірка:",
-		"Ризик:",
-		"Наступне:",
+		"One assigned agent owns the full lifecycle",
+		"`Backlog`: planned work",
+		"`In Review`: only when a human must decide a production-impacting action.",
+		"`Done`: the requested non-production result is complete and verified.",
+		"Create a child only for a separately useful",
+		"Use a real member mention when an answer or decision is needed.",
 		"references/standard-workflow-source-map.md",
 	}
 	for _, want := range mustContain {
@@ -288,8 +283,7 @@ func TestBPAStandardWorkflowSkillTeachesSingleTicketHandoffs(t *testing.T) {
 			t.Errorf("BPA standard workflow skill missing %q", want)
 		}
 	}
-	assertBPAFinalRootSummaryHeadings(t, body)
-	for _, forbidden := range []string{"--stage 1 --status todo", "--stage 2 --status backlog", "Quality is a separate child issue"} {
+	for _, forbidden := range []string{"Lead →", "Quality →", "Team Lead owns"} {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("single-ticket standard workflow still requires %q", forbidden)
 		}
@@ -306,12 +300,10 @@ func TestBPAProductionWorkflowSkillTeachesApprovalBoundaries(t *testing.T) {
 	}
 	_, body, _ := splitFrontmatter(skill.Content)
 	mustContain := []string{
-		"Lead → specialist → Quality → Lead",
-		"one root issue",
-		"mention://agent/",
-		"current production scope",
-		"It never changes",
-		"Child issues are optional only for independent parallel deliverables.",
+		"One assigned agent owns preparation, execution, verification, commit",
+		"The approval is for the task scope, not for every command.",
+		"Treat it as natural language,",
+		"If it is conditional, a question, a refusal, or ambiguous, do not make a",
 		"references/production-workflow-source-map.md",
 	}
 	for _, want := range mustContain {
@@ -319,9 +311,8 @@ func TestBPAProductionWorkflowSkillTeachesApprovalBoundaries(t *testing.T) {
 			t.Errorf("BPA production workflow skill missing %q", want)
 		}
 	}
-	assertBPAFinalRootSummaryHeadings(t, body)
-	if strings.Contains(body, "normal staged children") {
-		t.Error("production workflow still requires staged children for handoffs")
+	if strings.Contains(body, "Lead →") {
+		t.Error("production workflow still requires multi-agent orchestration")
 	}
 	if !skillHasFile(skill, "references/production-workflow-source-map.md") {
 		t.Error("BPA production workflow skill is missing its source map")
@@ -334,25 +325,9 @@ func TestBPAInvestigationWorkflowIsEvidenceOnly(t *testing.T) {
 		return
 	}
 	_, body, _ := splitFrontmatter(skill.Content)
-	for _, want := range []string{"Lead → Investigator → Quality → Lead", "one root issue", "mention://agent/", "read-only", "Гіпотези:", "не створює implementation-child"} {
+	for _, want := range []string{"assigned agent investigates one root issue end-to-end", "read-only evidence", "Move the issue to `Done`", "If a fix is warranted, create or request a separate Standard or"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("investigation workflow skill missing %q", want)
-		}
-	}
-	assertBPAFinalRootSummaryHeadings(t, body)
-}
-
-func assertBPAFinalRootSummaryHeadings(t *testing.T, body string) {
-	t.Helper()
-	for _, heading := range []string{
-		"**Що було не так:**",
-		"**Що змінили:**",
-		"**Що перевірили:**",
-		"**Результат:**",
-		"**Ризик / наступне:**",
-	} {
-		if !strings.Contains(body, heading) {
-			t.Errorf("BPA workflow skill missing final root heading %q", heading)
 		}
 	}
 }

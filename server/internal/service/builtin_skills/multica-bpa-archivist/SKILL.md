@@ -31,7 +31,7 @@ The summary may be detailed when the task requires it, but keep a stable shape:
 
 Реалізація: <what was changed or is being built>
 
-Перевірка: <evidence and Quality result>
+Перевірка: <evidence and verification result>
 
 Git: <commit SHA, PR, or no repo changes with reason>
 
@@ -40,5 +40,5 @@ Git: <commit SHA, PR, or no repo changes with reason>
 
 Do not create or edit issues, comments, assignments, statuses, code, commits,
 branches, pushes, PRs, deployments, production data, IAM, or secrets. Do not
-route agents. Team Lead remains the only workflow manager. Do not post progress
-updates; the final task output stays in run history and archive metadata.
+route agents or change workflow state. Do not post progress updates; the final
+task output stays in run history and archive metadata.

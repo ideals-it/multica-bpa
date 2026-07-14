@@ -137,7 +137,7 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 
 // notifyParentOfChildBlocked wakes the root assignee when a child newly becomes
 // blocked. Unlike a completion, a blocker must not wait for a stage barrier:
-// Team Lead needs the decision immediately or the workflow becomes silent.
+// the assignee needs the decision immediately or the workflow becomes silent.
 func (h *Handler) notifyParentOfChildBlocked(ctx context.Context, prev, issue db.Issue) {
 	if !issue.ParentIssueID.Valid || prev.Status == "blocked" || issue.Status != "blocked" {
 		return
@@ -148,7 +148,7 @@ func (h *Handler) notifyParentOfChildBlocked(ctx context.Context, prev, issue db
 	}
 	mentionPrefix := h.buildParentAssigneeMention(ctx, parent)
 	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
-	content := fmt.Sprintf("%sПідзадача [%s-%d](mention://issue/%s) заблокована.\n\nПричина: Team Lead має прийняти рішення щодо «%s».\n\nНаступне: Team Lead перевіряє blocker і визначає наступний крок.", mentionPrefix, prefix, issue.Number, uuidToString(issue.ID), sanitizeChildTitleForSystemComment(issue.Title))
+	content := fmt.Sprintf("%sПідзадача [%s-%d](mention://issue/%s) заблокована.\n\nПотрібне рішення щодо «%s».\n\nНаступне: перевірити blocker і визначити наступний крок.", mentionPrefix, prefix, issue.Number, uuidToString(issue.ID), sanitizeChildTitleForSystemComment(issue.Title))
 	comment, err := h.Queries.CreateComment(ctx, db.CreateCommentParams{IssueID: parent.ID, WorkspaceID: parent.WorkspaceID, AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system"})
 	if err != nil {
 		return

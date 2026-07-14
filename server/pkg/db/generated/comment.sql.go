@@ -203,7 +203,17 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (C
 }
 
 const deleteComment = `-- name: DeleteComment :exec
-DELETE FROM comment WHERE id = $1 AND workspace_id = $2
+WITH deleted AS (
+    DELETE FROM comment
+    WHERE comment.id = $1 AND comment.workspace_id = $2
+    RETURNING comment.id, comment.issue_id
+)
+UPDATE issue
+SET metadata = jsonb_set(metadata, ARRAY['bpa.review_comment_id'], to_jsonb(''::text)),
+    updated_at = now()
+FROM deleted
+WHERE issue.id = deleted.issue_id
+  AND issue.metadata ->> 'bpa.review_comment_id' = deleted.id::text
 `
 
 type DeleteCommentParams struct {
@@ -212,6 +222,8 @@ type DeleteCommentParams struct {
 }
 
 // Defense-in-depth: workspace_id is a SQL-layer tenant guard. See DeleteIssue.
+// If this comment is the active production-review trigger, clear that binding
+// in the same statement so a replacement owner/admin comment can be routed.
 func (q *Queries) DeleteComment(ctx context.Context, arg DeleteCommentParams) error {
 	_, err := q.db.Exec(ctx, deleteComment, arg.ID, arg.WorkspaceID)
 	return err

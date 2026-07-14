@@ -123,18 +123,19 @@ func TestAutopilotRunOnlyTaskTerminalEventsUpdateRun(t *testing.T) {
 }
 
 // linkedIssueAutopilotFixture is the starting state every create_issue
-// linked-issue listener test shares: a dispatched create_issue run sitting in
-// issue_created with exactly one issue task that carries no autopilot_run_id
-// (so it must be reached via the issue_id lookup, not SyncRunFromTask).
+// linked-issue listener test shares: a create_issue run parked in Backlog,
+// followed by a simulated human promotion and one issue task that carries no
+// autopilot_run_id (so it must be reached via issue_id lookup).
 type linkedIssueAutopilotFixture struct {
-	taskSvc *service.TaskService
-	queries *db.Queries
-	run     *db.AutopilotRun
-	taskID  pgtype.UUID
+	taskSvc      *service.TaskService
+	autopilotSvc *service.AutopilotService
+	queries      *db.Queries
+	run          *db.AutopilotRun
+	taskID       pgtype.UUID
 }
 
 // dispatchCreateIssueAutopilot creates an active create_issue autopilot,
-// dispatches it, and returns the linked run plus its single issue task.
+// dispatches it, promotes the linked issue, and returns its single issue task.
 // Cleanup (autopilot, issue, tasks, comments) is registered on t.
 func dispatchCreateIssueAutopilot(t *testing.T, title string) linkedIssueAutopilotFixture {
 	t.Helper()
@@ -189,17 +190,48 @@ func dispatchCreateIssueAutopilot(t *testing.T, title string) linkedIssueAutopil
 	if err != nil {
 		t.Fatalf("ListTasksByIssue: %v", err)
 	}
-	if len(tasks) != 1 {
-		t.Fatalf("expected one issue task, got %d", len(tasks))
+	if len(tasks) != 0 {
+		t.Fatalf("autopilot-created Backlog issue started %d tasks, want 0", len(tasks))
 	}
-	if tasks[0].AutopilotRunID.Valid {
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, run.IssueID); err != nil {
+		t.Fatalf("promote linked issue: %v", err)
+	}
+	issue, err := queries.GetIssue(ctx, run.IssueID)
+	if err != nil {
+		t.Fatalf("GetIssue after promotion: %v", err)
+	}
+	task, err := taskSvc.EnqueueTaskForIssue(ctx, issue)
+	if err != nil {
+		t.Fatalf("enqueue promoted issue: %v", err)
+	}
+	if task.AutopilotRunID.Valid {
 		t.Fatal("create_issue issue task unexpectedly has autopilot_run_id; test must exercise linked issue lookup")
 	}
 	if run.Status != "issue_created" {
 		t.Fatalf("expected pre-failure run status issue_created, got %q", run.Status)
 	}
 
-	return linkedIssueAutopilotFixture{taskSvc: taskSvc, queries: queries, run: run, taskID: tasks[0].ID}
+	return linkedIssueAutopilotFixture{taskSvc: taskSvc, autopilotSvc: autopilotSvc, queries: queries, run: run, taskID: task.ID}
+}
+
+func TestAutopilotCreateIssueRunStaysOpenInProductionReview(t *testing.T) {
+	ctx := context.Background()
+	f := dispatchCreateIssueAutopilot(t, "Create-issue production review pause")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, f.run.IssueID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := f.queries.GetIssue(ctx, f.run.IssueID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.autopilotSvc.SyncRunFromIssue(ctx, issue)
+	updated, err := f.queries.GetAutopilotRun(ctx, f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != "issue_created" {
+		t.Fatalf("In Review completed autopilot run with status %q, want issue_created", updated.Status)
+	}
 }
 
 // runTaskWithBudget marks the issue task dispatched with the given attempt
@@ -484,14 +516,15 @@ func TestAutopilotCreateIssueDispatchCreatesIssueWhenRuntimeOffline(t *testing.T
 	if err != nil {
 		t.Fatalf("ListTasksByIssue: %v", err)
 	}
-	if len(tasks) != 1 {
-		t.Fatalf("expected one queued issue task, got %d", len(tasks))
+	if len(tasks) != 0 {
+		t.Fatalf("offline autopilot-created Backlog issue queued %d tasks, want 0", len(tasks))
 	}
-	if tasks[0].AgentID != parseUUID(agentID) {
-		t.Fatalf("task agent mismatch: got %v want %v", tasks[0].AgentID, parseUUID(agentID))
+	issue, err := queries.GetIssue(ctx, run.IssueID)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
 	}
-	if tasks[0].RuntimeID != parseUUID(runtimeID) {
-		t.Fatalf("task runtime mismatch: got %v want %v", tasks[0].RuntimeID, parseUUID(runtimeID))
+	if issue.Status != "backlog" || issue.AssigneeID != parseUUID(agentID) {
+		t.Fatalf("created issue status/assignee = %q/%v, want backlog/%v", issue.Status, issue.AssigneeID, parseUUID(agentID))
 	}
 }
 

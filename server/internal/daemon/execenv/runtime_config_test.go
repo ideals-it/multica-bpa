@@ -142,10 +142,10 @@ func TestBriefHasNoParentNotificationGuidance(t *testing.T) {
 
 // Comment-triggered briefs must NOT carry any unconditional status-flip
 // command targeting the current issue. Previous revisions had a
-// dedicated protocol step that wrote `multica issue status <this-issue-id> in_review`;
-// the comment-triggered workflow rule "Do NOT change the issue status
-// unless the comment explicitly asks for it" must remain the source of
-// truth (Elon's blocking review on PR #2918).
+// dedicated protocol step that wrote `multica issue status <this-issue-id> in_review`.
+// A pending production review is the narrow exception: a clear owner/admin
+// continuation must return the ticket to In Progress so the server can bind
+// that exact scope before any production work starts.
 func TestCommentTriggeredProtocolDoesNotForceInReview(t *testing.T) {
 	t.Parallel()
 	ctx := TaskContextForEnv{
@@ -158,9 +158,28 @@ func TestCommentTriggeredProtocolDoesNotForceInReview(t *testing.T) {
 		t.Errorf("comment-triggered brief must not contain a placeholder `<this-issue-id> in_review` flip — that conflicts with the comment-triggered \"do not change status unless asked\" rule")
 	}
 
-	const guardrail = "Do NOT change the issue status unless the comment explicitly asks for it"
+	const guardrail = "Do NOT change the issue status unless the comment explicitly asks for it, except when you clearly interpret an owner/admin production-review reply as approval of the current scope"
 	if !strings.Contains(out, guardrail) {
 		t.Errorf("expected the comment-triggered workflow guardrail %q to be present", guardrail)
+	}
+}
+
+func TestCommentTriggeredProtocolTreatsProductionApprovalAsNaturalLanguage(t *testing.T) {
+	t.Parallel()
+	ctx := TaskContextForEnv{
+		IssueID:          "55555555-6666-7777-8888-999999999999",
+		TriggerCommentID: "66666666-7777-8888-9999-aaaaaaaaaaaa",
+	}
+	out := buildMetaSkillContent("claude", ctx)
+
+	for _, want := range []string{
+		"Treat a human reply about a production decision as natural language, not a keyword.",
+		"If it clearly approves the described scope, state that interpretation briefly in your ticket comment before performing only that scope.",
+		"If it is conditional, a question, a refusal, or ambiguous, do not perform a production action; ask the remaining question and mention the human owner.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("comment-triggered brief missing production approval guidance %q\n---\n%s", want, out)
+		}
 	}
 }
 
@@ -282,7 +301,8 @@ func TestAssignmentTriggeredProtocolHonorsAgentIdentity(t *testing.T) {
 		"Run `multica issue status " + issueID + " in_progress` unless your Agent Identity forbids issue status changes; if it does, skip this step.",
 		"Complete the task within your Agent Identity boundaries.",
 		"Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action",
-		"When done, run `multica issue status " + issueID + " in_review` unless your Agent Identity forbids issue status changes; if it does, skip this step.",
+		"When the task is complete and no human production decision is needed, run `multica issue status " + issueID + " done` unless your Agent Identity forbids issue status changes; if it does, skip this step.",
+		"Use `in_review` only when the ticket itself needs a human approval before a production-impacting action.",
 		"If blocked, run `multica issue status " + issueID + " blocked` unless your Agent Identity forbids issue status changes.",
 	} {
 		if !strings.Contains(out, want) {
@@ -293,7 +313,7 @@ func TestAssignmentTriggeredProtocolHonorsAgentIdentity(t *testing.T) {
 	for _, banned := range []string{
 		"4. Run `multica issue status " + issueID + " in_progress`\n",
 		"5. Follow your Skills and Agent Identity to complete the task (write code, investigate, etc.)",
-		"8. When done, run `multica issue status " + issueID + " in_review`\n",
+		"8. When the task is complete and no human production decision is needed, run `multica issue status " + issueID + " done`\n",
 	} {
 		if strings.Contains(out, banned) {
 			t.Errorf("assignment-triggered brief still contains unconditional legacy workflow text %q\n---\n%s", banned, out)
@@ -371,19 +391,13 @@ func TestChatOutputDoesNotRequireIssueComment(t *testing.T) {
 	}
 }
 
-// The Output section for issue tasks must forbid mid-run progress
-// comments and require the single final result comment. Guards the
-// MUL-3605 regression where a review agent surfaced its progress
-// narration as the result instead of posting a conclusion. (The
-// pre-existing "Final results MUST be delivered … invisible without it"
-// and "state the outcome, not the process" lines already carry the
-// mandatory-comment and no-process-dump halves.) Chat / quick-create /
-// autopilot kinds keep their own delivery channels and must NOT inherit
-// this rule. Runs both the legacy and slim paths.
-func TestOutputForbidsMidRunProgressComments(t *testing.T) {
+// Long issue runs provide concise progress without leaking command/log noise,
+// and still finish with a mandatory result comment.
+func TestOutputAllowsConciseLongRunProgressComments(t *testing.T) {
 	wantPhrases := []string{
-		"Post exactly ONE comment per run",
-		"Do NOT post progress updates",
+		"Always post a final result",
+		"longer than 3–5 minutes",
+		"Do not post commands, raw logs",
 	}
 	issueCtxs := map[string]TaskContextForEnv{
 		"assignment": {IssueID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},

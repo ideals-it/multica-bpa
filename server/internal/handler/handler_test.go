@@ -1255,14 +1255,14 @@ func TestAutopilotCreatedIssueCreatorIsAssigneeAgent(t *testing.T) {
 		t.Fatalf("dispatch result = %+v, want status issue_created", run)
 	}
 
-	var creatorType, creatorID string
+	var creatorType, creatorID, issueStatus string
 	if err := testPool.QueryRow(ctx, `
-		SELECT id, creator_type, creator_id
+		SELECT id, creator_type, creator_id, status
 		FROM issue
 		WHERE workspace_id = $1 AND title = $2
 		ORDER BY created_at DESC
 		LIMIT 1
-	`, testWorkspaceID, title).Scan(&issueID, &creatorType, &creatorID); err != nil {
+	`, testWorkspaceID, title).Scan(&issueID, &creatorType, &creatorID, &issueStatus); err != nil {
 		t.Fatalf("load autopilot-created issue: %v", err)
 	}
 	if creatorType != "agent" {
@@ -1270,6 +1270,16 @@ func TestAutopilotCreatedIssueCreatorIsAssigneeAgent(t *testing.T) {
 	}
 	if creatorID != agentID {
 		t.Fatalf("issue creator_id = %q, want assignee agent %q", creatorID, agentID)
+	}
+	if issueStatus != "backlog" {
+		t.Fatalf("autopilot-created issue status = %q, want backlog", issueStatus)
+	}
+	var taskCount int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, issueID).Scan(&taskCount); err != nil {
+		t.Fatalf("count autopilot-created issue tasks: %v", err)
+	}
+	if taskCount != 0 {
+		t.Fatalf("autopilot-created Backlog issue queued %d tasks, want 0", taskCount)
 	}
 
 	select {
