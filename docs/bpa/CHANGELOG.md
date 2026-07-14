@@ -1,5 +1,17 @@
 # BPA fork changelog
 
+## 2026-07-14 — Legacy production-review recovery
+
+An owner or admin comment on a legacy pending production-review ticket now
+repairs the missing review marker and reaches the assigned agent. The agent,
+rather than a server keyword parser, reads the complete conversation and
+decides whether the human message clearly approves the already bounded scope.
+Only then can that exact task resume the ticket; an ordinary question or
+ambiguous reply keeps it in `In Review`.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-14 — Simple task-board agent contracts
 
 The active BPA workspace now uses four roles only: **AT Codex**, **AT

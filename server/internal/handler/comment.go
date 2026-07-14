@@ -1682,13 +1682,38 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 // markBPAReviewTrigger binds a production continuation to the task that was
 // actually queued while the issue was visibly pending review. A task created
 // from an older/pre-review comment never receives this marker and therefore
-// cannot authorize production execution.
+// cannot authorize production execution. Legacy pending reviews that predate
+// review_requested_at are repaired from their first owner/admin comment.
 func (h *Handler) markBPAReviewTrigger(ctx context.Context, issue db.Issue, task db.AgentTaskQueue, commentID pgtype.UUID) {
 	if !isPendingBPAProductionReview(issue) || !task.TriggerCommentID.Valid || task.TriggerCommentID != commentID {
 		return
 	}
 	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
-	if err != nil || state.ReviewRequestedAt == "" || state.ScopeFingerprint == "" {
+	if err != nil || state.ScopeFingerprint == "" {
+		return
+	}
+	if state.ReviewRequestedAt == "" {
+		comment, commentErr := h.Queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{
+			ID: commentID, WorkspaceID: issue.WorkspaceID,
+		})
+		if commentErr != nil || comment.AuthorType != "member" || !comment.AuthorID.Valid {
+			return
+		}
+		member, memberErr := h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+			UserID: comment.AuthorID, WorkspaceID: issue.WorkspaceID,
+		})
+		if memberErr != nil || !roleAllowed(member.Role, "owner", "admin") {
+			return
+		}
+		if _, initErr := h.Queries.InitializeLegacyBPAReviewCommentIfCurrent(ctx, db.InitializeLegacyBPAReviewCommentIfCurrentParams{
+			ID:                       issue.ID,
+			WorkspaceID:              issue.WorkspaceID,
+			ReviewRequestedAt:        comment.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+			ReviewCommentID:          uuidToString(commentID),
+			ExpectedScopeFingerprint: state.ScopeFingerprint,
+		}); initErr != nil && !isNotFound(initErr) {
+			slog.Warn("initialize legacy production review trigger failed", "issue_id", uuidToString(issue.ID), "task_id", uuidToString(task.ID), "error", initErr)
+		}
 		return
 	}
 	if _, err := h.Queries.SetBPAReviewCommentIfCurrent(ctx, db.SetBPAReviewCommentIfCurrentParams{

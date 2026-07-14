@@ -121,12 +121,11 @@ func (s *TaskService) isProductionReviewCommentContinuation(ctx context.Context,
 	if err != nil || comment.IssueID != root.ID || comment.AuthorType != "member" || !comment.AuthorID.Valid {
 		return false
 	}
-	if state.ReviewRequestedAt == "" {
-		return false
-	}
-	reviewRequestedAt, err := time.Parse(time.RFC3339Nano, state.ReviewRequestedAt)
-	if err != nil || comment.CreatedAt.Time.Before(reviewRequestedAt) {
-		return false
+	if state.ReviewRequestedAt != "" {
+		reviewRequestedAt, err := time.Parse(time.RFC3339Nano, state.ReviewRequestedAt)
+		if err != nil || comment.CreatedAt.Time.Before(reviewRequestedAt) {
+			return false
+		}
 	}
 	member, err := s.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID: comment.AuthorID, WorkspaceID: root.WorkspaceID,

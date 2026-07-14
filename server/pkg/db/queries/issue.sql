@@ -354,6 +354,27 @@ WHERE id = sqlc.arg('id')
   AND COALESCE(metadata ->> 'bpa.review_comment_id', '') = ''
 RETURNING *;
 
+-- name: InitializeLegacyBPAReviewCommentIfCurrent :one
+-- Repairs the incomplete review marker written by an older BPA release. Only
+-- the first owner/admin comment on the still-current pending scope can become
+-- the review trigger; later comments must not replace its authorization link.
+UPDATE issue SET
+    metadata = metadata || jsonb_build_object(
+        'bpa.review_requested_at', sqlc.arg('review_requested_at')::text,
+        'bpa.review_comment_id', sqlc.arg('review_comment_id')::text
+    ),
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND workspace_id = sqlc.arg('workspace_id')
+  AND status = 'in_review'
+  AND metadata ->> 'bpa.template' = 'production'
+  AND metadata ->> 'bpa.approval_status' = 'pending'
+  AND metadata ->> 'bpa.waiting_for' = 'human_approval'
+  AND metadata ->> 'bpa.scope_fingerprint' = sqlc.arg('expected_scope_fingerprint')::text
+  AND COALESCE(metadata ->> 'bpa.review_requested_at', '') = ''
+  AND COALESCE(metadata ->> 'bpa.review_comment_id', '') = ''
+RETURNING *;
+
 -- name: DeleteIssueMetadataKey :one
 -- Atomically removes a single key from the issue's metadata JSONB.
 -- Deleting a missing key is a no-op (still returns the row).

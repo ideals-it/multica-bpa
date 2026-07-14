@@ -121,6 +121,87 @@ func TestBPAReviewOwnerCommentQueuesContinuationWithoutRecordingApproval(t *test
 	}
 }
 
+func TestLegacyPendingProductionReviewCommentInitializesReviewTriggerAndAllowsContinuation(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "LegacyReviewDiscussionAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92155, "legacy production review discussion")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_review' WHERE id = $1`, issueID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This is intentionally an older pending review: it predates the
+	// review_requested_at marker used to bind the next owner/admin reply to
+	// the agent task that receives it. The agent still interprets the full
+	// natural-language reply; initializing this marker is not itself approval.
+	issue, err = testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template":          string(bpa.TemplateProduction),
+		"bpa.waiting_for":       string(bpa.WaitingForHumanApproval),
+		"bpa.approval_status":   string(bpa.ApprovalPending),
+		"bpa.scope_fingerprint": bpa.TicketScopeFingerprint(issue.Title, ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", CreateCommentRequest{
+		Content: "[@LegacyReviewDiscussionAgent](mention://agent/" + agentID + ") усе перевірив: можна продовжувати саме з погодженим планом.",
+	})
+	req = withURLParam(req, "id", issueID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var comment CommentResponse
+	if err := json.NewDecoder(w.Body).Decode(&comment); err != nil {
+		t.Fatal(err)
+	}
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT id::text
+		FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND trigger_comment_id = $3::uuid AND status = 'queued'
+	`, issueID, agentID, comment.ID).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+
+	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReviewRequestedAt == "" || state.ReviewCommentID != comment.ID {
+		t.Fatalf("legacy review must be initialized from the current member comment, state=%#v", state)
+	}
+	if state.ApprovalStatus != bpa.ApprovalPending || state.WaitingFor != bpa.WaitingForHumanApproval {
+		t.Fatalf("initializing a legacy review trigger must not itself approve it, state=%#v", state)
+	}
+
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	req = newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_progress"})
+	req = withURLParam(req, "id", issueID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", agentID)
+	req.Header.Set("X-Task-ID", taskID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("legacy review continuation must enter In Progress, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestStaleReviewCommentCannotMarkAReplacementProductionReview(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
