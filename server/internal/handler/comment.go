@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -979,6 +980,17 @@ type CreateCommentRequest struct {
 	SuppressAgentIDs []string `json:"suppress_agent_ids"`
 }
 
+// legacyBPACommentSectionLabel matches only the old, template-style labels at
+// the beginning of a paragraph. It deliberately does not impose a replacement
+// structure: the shared agent skill remains responsible for natural language,
+// while the server prevents a resumed session from reintroducing the retired
+// Result / Check / Risk / Next presentation.
+var legacyBPACommentSectionLabel = regexp.MustCompile(`(?m)^(?:\*\*)?(?:Результат|Перевірка|Ризик|Наступне|Result|Verification|Risk|Next)(?:(?::\*\*)|(?:\*\*)?:)[ \t]*`)
+
+func normalizeBPAAgentCommentContent(content string) string {
+	return legacyBPACommentSectionLabel.ReplaceAllString(content, "")
+}
+
 type CommentTriggerPreviewRequest struct {
 	Content          string  `json:"content"`
 	ParentID         *string `json:"parent_id"`
@@ -1304,6 +1316,13 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// entity-encode Markdown syntax characters (>, ", &, <) and corrupt the
 	// source. See issue #1303 / discussion in MUL-1119, MUL-1125.
 	content := req.Content
+	if authorType == "agent" {
+		// The BPA template only governs our customized agent behavior. Do not
+		// alter member-authored text or comments in upstream Multica workspaces.
+		if _, enabled, err := h.bpaRoot(r.Context(), issue); err == nil && enabled {
+			content = normalizeBPAAgentCommentContent(content)
+		}
+	}
 
 	// parent_id stores the exact comment being replied to. Thread-level behavior
 	// (for example auto-unresolving a resolved thread) resolves the root

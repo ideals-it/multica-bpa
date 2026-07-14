@@ -61,6 +61,63 @@ func TestLeadReactionDoesNotBypassProductionReview(t *testing.T) {
 	_ = comment
 }
 
+func TestNormalizeBPAAgentCommentContentRemovesLegacySectionLabels(t *testing.T) {
+	input := "**Результат:** Локальний fix готовий.\n\n**Перевірка:** Verification: `npm test` пройшов.\n\n**Ризик:** Потрібен повторний запуск.\n\n**Наступне**: Передаю зміни на рев'ю."
+	want := "Локальний fix готовий.\n\n`npm test` пройшов.\n\nПотрібен повторний запуск.\n\nПередаю зміни на рев'ю."
+
+	if got := normalizeBPAAgentCommentContent(input); got != want {
+		t.Fatalf("normalized comment = %q, want %q", got, want)
+	}
+}
+
+func TestBPAAgentCommentIsPersistedWithoutLegacySectionLabels(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "LegacyCommentFormatAgent", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92160, "legacy comment format")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.setBPAWorkflowValues(newRequest(http.MethodPost, "/", nil), issue, map[string]any{
+		"bpa.template": string(bpa.TemplateStandard),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", CreateCommentRequest{
+		Content: "**Результат:** Виправлення готове.\n\n**Перевірка:** `go test ./...` пройшов.",
+	})
+	req = withURLParam(req, "id", issueID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", agentID)
+	req.Header.Set("X-Task-ID", taskID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var response CommentResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	want := "Виправлення готове.\n\n`go test ./...` пройшов."
+	if response.Content != want {
+		t.Fatalf("response content = %q, want %q", response.Content, want)
+	}
+	stored, err := testHandler.Queries.GetComment(ctx, parseUUID(response.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Content != want {
+		t.Fatalf("stored content = %q, want %q", stored.Content, want)
+	}
+}
+
 func TestBPAReviewOwnerCommentQueuesContinuationWithoutRecordingApproval(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

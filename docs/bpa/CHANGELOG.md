@@ -1,5 +1,17 @@
 # BPA fork changelog
 
+## 2026-07-14 — Agent comment presentation guard
+
+For an agent comment on a BPA workflow ticket, the server now removes only the
+retired template labels `Результат`, `Перевірка`, `Ризик`, `Наступне` (and their
+English counterparts) before the comment is stored. It keeps the text,
+paragraphs, Markdown, and technical identifiers unchanged. The shared skill
+remains the single source of truth for natural Ukrainian writing; this guard
+only prevents an old resumed session from restoring the discarded structure.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-14 — Legacy production-review recovery
 
 An owner or admin comment on a legacy pending production-review ticket now
