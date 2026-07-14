@@ -1,5 +1,17 @@
 # BPA fork changelog
 
+## 2026-07-14 — Mandatory skill discipline
+
+`using-superpowers` is now attached to all four active BPA agents and is a
+mandatory first step for every task response or action. The shared contract
+requires agents to identify and invoke all applicable skills before inspection,
+planning, clarification, or execution. The `caveman` skill is deliberately not
+attached: it is an explicit-request response-style mode, not an execution or
+safety control, and would reduce clarity in normal task work.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-14 — Verification before completion
 
 The shared BPA skill now requires proportionate behavioral verification before
