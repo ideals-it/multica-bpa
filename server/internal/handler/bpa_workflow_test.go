@@ -26,35 +26,7 @@ func TestStartBPAWorkflowRejectsMainIssueWithoutAgentLead(t *testing.T) {
 	}
 }
 
-func TestBPAApprovalCommentRecognizesClearDeploymentDirective(t *testing.T) {
-	content := "[@AT Team Lead](mention://agent/7188d30e-c3eb-4f5b-8acf-cb2377069bf7) Деплой"
-	if !isBPAApprovalComment(content) {
-		t.Fatalf("clear deployment directive %q must approve the pending Production scope", content)
-	}
-}
-
-func TestBPAApprovalCommentRejectsDeploymentQuestionOrNegation(t *testing.T) {
-	for _, content := range []string{"Що з деплоєм?", "Деплой не роби"} {
-		if isBPAApprovalComment(content) {
-			t.Fatalf("non-approval comment %q must not approve the pending Production scope", content)
-		}
-	}
-}
-
-func TestBPAApprovalEmojiAcceptsThumbsUpAndOKOnly(t *testing.T) {
-	for _, emoji := range []string{"👍", "👌"} {
-		if !isBPAApprovalEmoji(emoji) {
-			t.Fatalf("approval emoji %q was rejected", emoji)
-		}
-	}
-	for _, emoji := range []string{"❤️", "✅", "👎"} {
-		if isBPAApprovalEmoji(emoji) {
-			t.Fatalf("non-approval emoji %q was accepted", emoji)
-		}
-	}
-}
-
-func TestLeadApprovalReactionApprovesPendingProductionScope(t *testing.T) {
+func TestLeadReactionDoesNotBypassProductionReview(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -83,14 +55,11 @@ func TestLeadApprovalReactionApprovesPendingProductionScope(t *testing.T) {
 	}
 
 	comment := db.Comment{IssueID: issue.ID, AuthorType: "agent", AuthorID: parseUUID(leadID)}
-	updated, approved, err := testHandler.approveBPAReviewReaction(req, comment, "member", "👍")
-	if err != nil || !approved {
-		t.Fatalf("thumbs-up approval = approved:%t err:%v", approved, err)
+	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
+	if err != nil || state.ApprovalStatus != bpa.ApprovalPending {
+		t.Fatalf("reaction must remain a normal signal, state = %#v, err=%v", state, err)
 	}
-	state, err := bpa.ParseState(parseIssueMetadata(updated.Metadata))
-	if err != nil || state.ApprovalStatus != bpa.ApprovalApproved || state.WaitingFor != bpa.WaitingForLead {
-		t.Fatalf("reaction approval state = %#v, err=%v", state, err)
-	}
+	_ = comment
 }
 
 func TestBPAWorkerCommentGetsLeadHandoffWhenNoOwnerMentioned(t *testing.T) {
@@ -323,7 +292,7 @@ func TestBPARootResolvesThroughNestedChildren(t *testing.T) {
 	}
 }
 
-func TestApproveCommentApprovesCurrentTicketScope(t *testing.T) {
+func TestProductionReviewStartsWithPendingScope(t *testing.T) {
 	issueID := createMetadataTestIssue(t, "scope approval")
 	ctx := context.Background()
 	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
@@ -344,13 +313,9 @@ func TestApproveCommentApprovesCurrentTicketScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue, err = testHandler.approveBPAReviewComment(req, issue, "member", "Погоджую")
-	if err != nil {
-		t.Fatal(err)
-	}
 	state, err := bpa.ParseState(parseIssueMetadata(issue.Metadata))
-	if err != nil || state.ApprovalStatus != bpa.ApprovalApproved || state.ApprovedScopeFingerprint != state.ScopeFingerprint {
-		t.Fatalf("approval state = %#v, err = %v", state, err)
+	if err != nil || state.ApprovalStatus != bpa.ApprovalPending || state.ApprovedScopeFingerprint != "" {
+		t.Fatalf("review state = %#v, err = %v", state, err)
 	}
 }
 

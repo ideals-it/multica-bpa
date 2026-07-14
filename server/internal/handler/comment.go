@@ -1337,13 +1337,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create comment: "+err.Error())
 		return
 	}
-	if updatedIssue, approvalErr := h.approveBPAReviewComment(r, issue, authorType, content); approvalErr != nil {
-		writeError(w, http.StatusInternalServerError, "failed to record BPA approval")
-		return
-	} else {
-		issue = updatedIssue
-	}
-
 	// Link uploaded attachments to this comment.
 	if len(attachmentIDs) > 0 {
 		h.linkAttachmentsByIDs(r.Context(), comment.ID, issue.ID, attachmentIDs)
