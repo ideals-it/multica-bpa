@@ -1,5 +1,18 @@
 # BPA fork changelog
 
+## 2026-07-14 — Verification before completion
+
+The shared BPA skill now requires proportionate behavioral verification before
+an agent can return a task or move it to `Done`. A configuration readback,
+revision check, or `/health` response is explicitly insufficient when the
+ticket's result is a behavioral change. If the only meaningful verification is
+a bounded production write, the ticket stays in `In Review` and the agent asks
+Vitaliy for approval of that specific controlled run, including scope,
+safeguards, expected evidence, and rollback.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-14 — English agent contracts
 
 The active BPA agent descriptions, role instructions, and shared operating
