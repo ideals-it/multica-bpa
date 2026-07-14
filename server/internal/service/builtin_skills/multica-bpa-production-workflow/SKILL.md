@@ -17,6 +17,12 @@ The approval is for the task scope, not for every command. Describe the action,
 its expected impact, rollback path, and material residual risk in plain
 language. Do not perform the production action while the issue is in review.
 
+Independent review of the prepared material change is ordinary task work, not a
+human approval gate. Perform it, resolve actionable findings, and re-verify
+before requesting production approval. If an independent reviewer cannot run,
+perform and accurately label a separate self-review; do not block or ask the
+human for approval solely because of that limitation.
+
 ## Human conversation
 
 Read the whole human reply and its ticket context. Treat it as natural language,
@@ -33,6 +39,11 @@ not as a whitelist of words or an emoji.
 
 After the approved action, verify the result, post a concise plain-language
 outcome, and move the issue to `Done`. Use `Blocked` only for a named blocker.
+
+For long-running preparation or verification, progress updates are non-blocking
+heartbeats: use one concise Markdown blockquote beginning with `> ` and then
+continue work without waiting for acknowledgement. Reserve a normal comment
+and `In Review` for an actual human decision.
 
 Do not create child issues merely to split preparation, review, deployment, or
 GitHub publication. Create one only for independent work with its own useful

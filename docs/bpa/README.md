@@ -44,6 +44,24 @@ separately useful result, such as parallel work in another repository or an
 independent investigation. Do not create children for internal phases, review,
 Git, a handoff, or a summary.
 
+## Automatic review and uninterrupted execution
+
+Independent review is part of completing a material code, configuration,
+infrastructure, or documentation change. It is not a human approval gate. The
+executor starts review itself, resolves actionable findings, and re-verifies
+the result without creating a review ticket or asking Vitaliy for permission.
+
+`AT Codex`, `AT EventCatalog`, and `AT n8n Prod` have both
+`requesting-code-review` and `receiving-code-review` available for this work.
+If the runtime cannot start an independent reviewer, the executor performs a
+separate self-review pass and states that limitation accurately. It must not
+call self-review independent, block the ticket, or ask for human approval only
+because an independent reviewer is unavailable.
+
+The agent continues through implementation, review, fixes, and verification in
+the same task. It pauses only for a concrete external blocker, a genuinely
+ambiguous scope change, or an explicit approval boundary.
+
 ## Production approval and verification
 
 A production deployment, production-data change, IAM or secret change, or
@@ -80,13 +98,18 @@ and is the single source of truth for visible ticket communication.
   another agent only for a concrete delegated task.
 - For work longer than a meaningful stage, leave one short progress update
   every 3–5 minutes without raw logs, command transcripts, JSON, or internal
-  handoff noise.
+  handoff noise. A progress update is a non-blocking heartbeat: format it as
+  one Markdown blockquote beginning with `> ` and continue work immediately.
 
 ## Skills and tools
 
 `using-superpowers` is assigned to all active agents and is mandatory before
 any response or action. The agent must then identify and invoke every relevant
 skill before it inspects, plans, clarifies, or executes work.
+
+The three executor agents also have `requesting-code-review` and
+`receiving-code-review` for automatic review. `AT Archivist` remains read-only
+and does not receive review work.
 
 `AT Codex`, `AT EventCatalog`, and `AT n8n Prod` receive their configured MCP
 tools in their runtime sessions. They may use only tools that are actually

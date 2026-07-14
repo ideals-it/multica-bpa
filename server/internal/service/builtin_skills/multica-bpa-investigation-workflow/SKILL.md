@@ -12,8 +12,10 @@ configuration, run history, and other read-only evidence. Do not make a fix,
 deploy, or production change as part of the investigation.
 
 Keep the issue `In Progress` while evidence is being gathered. Post concise
-progress only for long-running work; avoid technical noise. The final comment
-must distinguish confirmed facts from hypotheses and state the symptom,
+progress only for long-running work; write it as one Markdown blockquote
+beginning with `> ` and immediately continue the investigation. It is not a
+handoff or a request for acknowledgement. Avoid technical noise. The final
+comment must distinguish confirmed facts from hypotheses and state the symptom,
 evidence, conclusion, and recommended next action in language useful to the
 human owner.
 

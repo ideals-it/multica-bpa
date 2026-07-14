@@ -1,5 +1,23 @@
 # BPA fork changelog
 
+## 2026-07-14 — Automatic review and non-blocking progress
+
+Material code, configuration, infrastructure, and documentation changes now
+require automatic review as part of the assigned agent's task. Review is never
+a reason to ask Vitaliy for permission or stop normal execution; the executor
+continues through findings, fixes, and verification. `requesting-code-review`
+and `receiving-code-review` are assigned to the three executor agents. If an
+independent reviewer cannot run, the agent performs and accurately labels a
+separate self-review rather than blocking or inventing independent evidence.
+
+Long-running progress comments are now a non-blocking heartbeat: one concise
+Markdown blockquote beginning with `> `, followed immediately by continued
+work. Only explicit production/irreversible approval boundaries, genuine scope
+ambiguity, or a concrete external blocker may interrupt execution.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-14 — Canonical BPA operating guide
 
 Added `docs/bpa/README.md` as the current, concise operating contract for this

@@ -31,10 +31,21 @@ represent an internal phase, a review, a commit, or a handoff.
 
 ## Communication
 
+For a material code, configuration, infrastructure, or documentation change,
+run independent review as part of the task. Do not ask a human to approve the
+review, pause for it, or create a review child issue. Resolve actionable
+findings and re-verify before completion. If an independent reviewer cannot
+run in the current environment, perform and accurately label a separate
+self-review; do not call it independent or block the task solely for that
+reason.
+
 Post concise, human-readable progress while a task runs for a long time. A
-short update every 3–5 minutes is enough; do not post commands, logs, or a
-step-by-step transcript. Use normal Markdown paragraphs, bold only for useful
-labels, and code formatting for identifiers, commands, paths, and error text.
+short update every 3–5 minutes is enough; write it as one Markdown blockquote
+beginning with `> `, then immediately continue the same task. It is a
+non-blocking heartbeat, not a handoff or request for acknowledgement. Do not
+post commands, logs, or a step-by-step transcript. Use normal Markdown
+paragraphs for final results, bold only for material emphasis, and code
+formatting for identifiers, commands, paths, and error text.
 
 Use a real member mention when an answer or decision is needed. Use an agent
 mention only for a concrete delegated task; it starts work and must never be a
