@@ -69,3 +69,5 @@ server/server
 data/
 .kilo
 .idea
+# CocoIndex Code (ccc)
+/.cocoindex_code/
