@@ -148,6 +148,9 @@ func buildCommentPrompt(task Task, provider string) string {
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
+	if task.PriorSessionID != "" {
+		b.WriteString("Runtime instructions and assigned skills may have changed since this session began. Before taking action or posting a reply, read the current `AGENTS.md` and the relevant `.agent_context/skills/*/SKILL.md` files in the work directory. Current files override remembered instructions from the resumed session.\n\n")
+	}
 	if task.TriggerCommentContent != "" {
 		authorLabel := "A user"
 		if task.TriggerAuthorType == "agent" {

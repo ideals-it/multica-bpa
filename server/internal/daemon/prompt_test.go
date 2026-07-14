@@ -581,6 +581,9 @@ func TestBuildPromptResumedNoDeltaDoesNotForceThreadRead(t *testing.T) {
 	out := BuildPrompt(task, "claude")
 
 	for _, want := range []string{
+		"Runtime instructions and assigned skills may have changed since this session began",
+		"Current files override remembered instructions",
+		"`AGENTS.md` and the relevant `.agent_context/skills/*/SKILL.md` files",
 		"triggering comment is already included above",
 		"No other new comments on this issue since your last run",
 		"active thread anchor `thread-root-1` and triggering comment ID `trigger-1`",
