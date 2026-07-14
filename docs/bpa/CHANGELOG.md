@@ -1,5 +1,16 @@
 # BPA fork changelog
 
+## 2026-07-14 — Canonical BPA operating guide
+
+Added `docs/bpa/README.md` as the current, concise operating contract for this
+fork and linked it from the repository README. It covers the active roles,
+ticket states, natural-language production approval, verification gate,
+comments, skills and MCP boundaries, Autopilots, and local live-inspection
+commands. Historical plans remain history rather than competing instructions.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-14 — Tool availability and evidence rule
 
 The shared BPA skill now requires agents to use only available, in-scope MCP

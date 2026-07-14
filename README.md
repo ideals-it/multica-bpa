@@ -21,7 +21,7 @@ Turn coding agents into real teammates — assign tasks, track progress, compoun
 [![GitHub stars](https://img.shields.io/github/stars/multica-ai/multica?style=flat)](https://github.com/multica-ai/multica/stargazers)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/W8gYBn226t)
 
-[Website](https://multica.ai) · [Cloud](https://multica.ai) · [Discord](https://discord.gg/W8gYBn226t) · [X](https://x.com/MulticaAI) · [Self-Hosting](SELF_HOSTING.md) · [Contributing](CONTRIBUTING.md)
+[Website](https://multica.ai) · [Cloud](https://multica.ai) · [Discord](https://discord.gg/W8gYBn226t) · [X](https://x.com/MulticaAI) · [Self-Hosting](SELF_HOSTING.md) · [BPA Fork Guide](docs/bpa/README.md) · [Contributing](CONTRIBUTING.md)
 
 **English | [简体中文](README.zh-CN.md)**
 
@@ -191,4 +191,3 @@ make dev
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow, worktree support, testing, and troubleshooting.
 
 An iOS mobile client lives in [`apps/mobile/`](apps/mobile/) — see its [README](apps/mobile/README.md) for how to build it onto your own iPhone.
-
