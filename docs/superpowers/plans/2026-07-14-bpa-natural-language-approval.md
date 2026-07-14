@@ -93,6 +93,6 @@ Use a fresh integration branch from `bpa/main`. Resolve conflicts by preserving 
 
 Run: `make migrate-up && cd server && go test ./internal/handler ./internal/service ./internal/daemon/execenv ./cmd/server -count=1`
 
-- [ ] **Step 3: Final review and draft PR**
+- [x] **Step 3: Final review and draft PR**
 
 Run one consolidated independent review for the integrated diff, apply confirmed findings, and rerun the complete verification suite. Push only the rebased integration branch and create a draft PR into `bpa/main`; do not deploy or restart the real local Multica before merge.
