@@ -1,5 +1,26 @@
 # BPA fork changelog
 
+## 2026-07-14 — Simple task-board agent contracts
+
+The active BPA workspace now uses four roles only: **AT Codex**, **AT
+EventCatalog**, **AT n8n Prod**, and read-only **AT Archivist**. Historical
+Lead → Builder → Quality, GitHub Ops, and role-handoff behavior below is kept
+only as migration history and is not an active contract.
+
+One shared BPA skill owns scope, evidence, secret handling, commit discipline,
+verification, and visible-comment style. Agent instructions now contain only
+their role, status semantics, and production boundary. Visible comments use
+short natural Markdown prose without fixed `Результат / Перевірка / Ризик /
+Наступне` sections; production approval remains the same-ticket `In Review`
+decision with a real mention and a natural-language human response.
+
+EventCatalog no longer has a daily build-check workflow: it builds after each
+article change. Daily significance triage and the weekly deploy reminder create
+assigned `Backlog` tickets only. n8n production work follows the same
+ticket-level `In Review` approval rule. No UI, board column, predefined status,
+production service, IAM, secret, or remote deployment changed in this contract
+cleanup.
+
 ## 2026-07-13 — Archivist is fully background
 
 Automatic BPA events now update only small server-owned knowledge markers. They
