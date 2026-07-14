@@ -1,5 +1,16 @@
 # BPA fork changelog
 
+## 2026-07-14 — English agent contracts
+
+The active BPA agent descriptions, role instructions, and shared operating
+contract are now written in English. This does not change the user-facing
+language rule: agents still write visible ticket comments and results in
+Ukrainian. The built-in Archivist skill now follows the same rule and no longer
+requires a labelled archive-summary template.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-14 — Agent comment presentation guard
 
 For an agent comment on a BPA workflow ticket, the server now removes only the

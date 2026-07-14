@@ -24,19 +24,11 @@ multica issue metadata set <root-id> --key bpa.archive_summary --value '<concise
 multica issue metadata set <root-id> --key bpa.archive_updated_at --value '<RFC3339 timestamp>'
 ```
 
-The summary may be detailed when the task requires it, but keep a stable shape:
-
-```text
-Стан: <current outcome and remaining owner>
-
-Реалізація: <what was changed or is being built>
-
-Перевірка: <evidence and verification result>
-
-Git: <commit SHA, PR, or no repo changes with reason>
-
-Ризик: <material residual risk>
-```
+The summary may be detailed when the task requires it. Write it as concise,
+natural Ukrainian prose with paragraphs as needed. Do not impose fixed labels
+or a report template. Include the current outcome, remaining owner, relevant
+implementation details, verification evidence, Git reference or no-repository
+reason, and material residual risk when each is applicable.
 
 Do not create or edit issues, comments, assignments, statuses, code, commits,
 branches, pushes, PRs, deployments, production data, IAM, or secrets. Do not
