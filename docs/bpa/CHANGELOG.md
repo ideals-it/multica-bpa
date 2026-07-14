@@ -1,5 +1,15 @@
 # BPA fork changelog
 
+## 2026-07-14 — Tool availability and evidence rule
+
+The shared BPA skill now requires agents to use only available, in-scope MCP
+tools and capabilities. A missing or failed required tool must be reported in
+the ticket with its concrete effect; agents must never invent tool output,
+access, verification, or an external-state claim.
+
+No UI, board, predefined status, production service, IAM, secret, or remote
+deployment behavior changed.
+
 ## 2026-07-14 — Mandatory skill discipline
 
 `using-superpowers` is now attached to all four active BPA agents and is a
